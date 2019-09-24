@@ -12,9 +12,10 @@ use merlin::Transcript;
 use errors::MPCError;
 use generators::{BulletproofGens, PedersenGens};
 use inner_product_proof;
-use range_proof::RangeProof;
+use range_proof::{RangeProof, ZetherProof};
 use transcript::TranscriptProtocol;
 
+use rand;
 use util;
 
 use super::messages::*;
@@ -333,5 +334,63 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
         proof_shares: &[ProofShare],
     ) -> Result<RangeProof, MPCError> {
         self.assemble_shares(proof_shares)
+    }
+    /// Assemble the final aggregated [`RangeProof`] from the given
+    /// `proof_shares`, but skip validation of the proof. Furthermore
+    /// it takes the remaining ZetherProof components to generater
+    /// the complete ZetherProof.
+    ///
+    /// ## WARNING
+    ///
+    /// This function does **NOT** validate the proof shares.  It is
+    /// suitable for creating aggregated proofs when all parties are
+    /// known by the dealer to be honest (for instance, when there's
+    /// only one party playing all roles).
+    ///
+    /// Otherwise, use
+    /// [`receive_shares`](DealerAwaitingProofShares::receive_shares),
+    /// which validates that all shares are well-formed, or else
+    /// detects which party(ies) submitted malformed shares.
+    pub fn receive_and_generate_zether(
+        mut self, 
+        sent_balance: &Scalar, 
+        remaining_balance: &Scalar,
+
+        proof_shares: &[ProofShare],
+        pk_sender: &RistrettoPoint, 
+        pk_receiver: &RistrettoPoint, 
+        enc_balance_after_transfer: (&RistrettoPoint, &RistrettoPoint), 
+        enc_amount_sender: (&RistrettoPoint, &RistrettoPoint),
+        sk_sender: &Scalar, 
+        comm_rnd: &Scalar,
+
+    ) -> Result<ZetherProof, MPCError> {
+        let range_proof = self.assemble_shares(proof_shares)?;
+        let mut rng = rand::thread_rng();
+
+        let pc_gens = self.pc_gens;
+        let z = self.bit_challenge.z;
+
+        let base_point = pc_gens.B;
+        let sk_hiding = Scalar::random(&mut rng);
+        let random_hiding = Scalar::random(&mut rng);
+        let balance_hiding = Scalar::random(&mut rng);
+
+        let z_square = z * z;
+        let z_cube = &z_square * z;
+
+        let ann_y = &sk_hiding * base_point;
+        let ann_D = &random_hiding * base_point; // Different from the original paper, they have a typo. (Their equation does not validate)
+        let ann_b = &balance_hiding * base_point + sk_hiding * (z_square * enc_amount_sender.1 +  z_cube * enc_balance_after_transfer.1);
+        let ann_y_ = &random_hiding * (pk_sender - pk_receiver); // in high doubt that this is correct
+        let ann_t = sk_hiding * (z_cube * enc_balance_after_transfer.1 + z_square * enc_amount_sender.1);
+
+        let challenge_sigma = self.transcript.challenge_scalar(b"challenge_sigma");
+
+        let res_sk = sk_hiding + challenge_sigma * sk_sender;
+        let res_r = random_hiding + challenge_sigma * comm_rnd;
+        let res_b = balance_hiding + challenge_sigma *(sent_balance * (z_square) + remaining_balance * (z_cube));
+
+        Ok(range_proof.to_ZetherProof(ann_y, ann_D, ann_b, ann_y_, ann_t, challenge_sigma, res_sk, res_r, res_b))
     }
 }

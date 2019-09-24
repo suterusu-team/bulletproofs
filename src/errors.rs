@@ -13,6 +13,10 @@ pub enum ProofError {
     /// factors does not match the number of values.
     #[fail(display = "Wrong number of blinding factors supplied.")]
     WrongNumBlindingFactors,
+    /// This error occurs if one tries to generate a zether proof
+    /// for a number of values not equal to 2
+    #[fail(display = "Wrong number of numbers for Zether proof")]
+    WrongNumZetherProof,
     /// This error occurs when attempting to create a proof with
     /// bitsize other than \\(8\\), \\(16\\), \\(32\\), or \\(64\\).
     #[fail(display = "Invalid bitsize, must have n = 8,16,32,64.")]

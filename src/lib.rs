@@ -45,7 +45,7 @@ mod transcript;
 
 pub use errors::ProofError;
 pub use generators::{BulletproofGens, BulletproofGensShare, PedersenGens};
-pub use range_proof::RangeProof;
+pub use range_proof::{RangeProof, ZetherProof};
 
 #[doc(include = "../docs/aggregation-api.md")]
 pub mod range_proof_mpc {
