@@ -457,11 +457,11 @@ impl RangeProof {
                     t_x_blinding: self.t_x_blinding, 
                     e_blinding: self.e_blinding, 
                     ipp_proof: self.ipp_proof,
-                    ann_y,
-                    ann_D,
-                    ann_b,
-                    ann_y_,
-                    ann_t, 
+                    ann_y: ann_y.compress(),
+                    ann_D: ann_D.compress(),
+                    ann_b: ann_b.compress(),
+                    ann_y_: ann_y_.compress(),
+                    ann_t: ann_t.compress(), 
                     remove_challenge, 
                     res_sk, 
                     res_r, 
@@ -527,15 +527,15 @@ pub struct ZetherProof {
     ipp_proof: InnerProductProof,
     /// Sigma protocol messages
     /// Commitment to the blinding factors
-    pub ann_y: RistrettoPoint,
+    pub ann_y: CompressedRistretto,
     /// Commitment to the blinding factors
-    pub ann_D: RistrettoPoint,
+    pub ann_D: CompressedRistretto,
     /// Commitment to the blinding factors
-    pub ann_b: RistrettoPoint,
+    pub ann_b: CompressedRistretto,
     /// Commitment to the blinding factors
-    pub ann_y_: RistrettoPoint,
+    pub ann_y_: CompressedRistretto,
     /// Commitment to the blinding factors
-    pub ann_t: RistrettoPoint, 
+    pub ann_t: CompressedRistretto, 
     /// Temporaty we store the challenge to verify correctness
     pub remove_challenge: Scalar, 
     /// Response to the challenge
@@ -550,9 +550,11 @@ impl ZetherProof {
 
     /// Generate for multiple in the zether scenario. Because of using ElGamal 
     /// encryptions in Zether, we need to twist a bit the proof an verification
-    /// given that the ElGamal bases do not satisfy the requirements of a 
-    /// Pedersen commitment base. Furhtermore, it returns the bit commitments
-    /// in order to generate the other proof. 
+    /// given that the ElGamal bases does not satisfy the requirements of a 
+    /// Pedersen commitment base. 
+    /// The main difference with the bulletproof, except of the sigma protocol, 
+    /// is how we apply the challenge to the committed polynomial.
+    /// In this scenario, we omit the first coefficient of the polynomial. 
     pub fn prove_multiple_zether(
         bp_gens: &BulletproofGens,
         pc_gens: &PedersenGens,
@@ -565,10 +567,9 @@ impl ZetherProof {
         pk_receiver: &RistrettoPoint,
         enc_balance_after_transfer: (&RistrettoPoint, &RistrettoPoint), 
         enc_amount_sender: (&RistrettoPoint, &RistrettoPoint), 
-        enc_amount_receiver: (&RistrettoPoint, &RistrettoPoint), 
         sk_sender: &Scalar, 
         comm_rnd: &Scalar,
-    ) -> Result<(ZetherProof, Vec<CompressedRistretto>, Scalar, Scalar, Scalar), ProofError> {
+    ) -> Result<(ZetherProof, Vec<CompressedRistretto>), ProofError> {
         use self::dealer::*;
         use self::party::*;
 
@@ -615,7 +616,7 @@ impl ZetherProof {
             // Collect the iterator of Results into a Result<Vec>, then unwrap it
             .collect::<Result<Vec<_>, _>>()?;
 
-        let proof = dealer.receive_and_generate_zether(
+        let proof = dealer.receive_shares_and_generate_zether(
                 &Scalar::from(values[0]), 
                 &Scalar::from(values[1]), 
                 &proof_shares, 
@@ -628,11 +629,15 @@ impl ZetherProof {
                 )?;
 
 
-        Ok((proof, value_commitments, poly_challenge.x, bit_challenge.y, bit_challenge.z))
+        Ok((proof, value_commitments))
     }
 
-    /// Verifies an aggregated rangeproof for the given value commitments, 
-    /// in the zether scenario
+    /// Verifies an aggregated rangeproof for the given value commitments together
+    /// with the sigma protocol. Note that in the 'mega check' we omit the 
+    /// verification involving the pedersen commitments of the values within a range 
+    /// to include the ElGamal encryptions instead. A simple translation would 
+    /// not suffice, given that ElGamal encryptions cannot be seen as Pedersen 
+    /// commitments.
     pub fn verify_multiple_zether(
         &self,
         bp_gens: &BulletproofGens,
@@ -675,6 +680,7 @@ impl ZetherProof {
         let y = transcript.challenge_scalar(b"y");
         let z = transcript.challenge_scalar(b"z");
         let zz = z * z;
+        let zzz = zz * z;
         let minus_z = -z;
 
         transcript.validate_and_append_point(b"T_1", &self.T_1)?;
@@ -687,11 +693,6 @@ impl ZetherProof {
         transcript.append_scalar(b"e_blinding", &self.e_blinding);
 
         let w = transcript.challenge_scalar(b"w");
-
-        let mut rng = transcript.build_rng().finalize(&mut rand::thread_rng());
-
-        // Challenge value for batching statements to be verified
-        let c = Scalar::random(&mut rng);
 
         let (x_sq, x_inv_sq, s) = self.ipp_proof.verification_scalars(n * m, transcript)?;
         let s_inv = s.iter().rev();
@@ -713,72 +714,52 @@ impl ZetherProof {
             .zip(concat_z_and_2.iter())
             .map(|((s_i_inv, exp_y_inv), z_and_2)| z + exp_y_inv * (zz * z_and_2 - b * s_i_inv));
 
-        let value_commitment_scalars = util::exp_iter(z).take(m).map(|z_exp| c * zz * z_exp);
         let basepoint_scalar = w * (self.t_x - a * b);// + c * (delta(n, m, &y, &z) - self.t_x);
-
-        // STARTING INCLUSION HERE // 
 
         let challenge_sigma = transcript.challenge_scalar(b"challenge_sigma");
 
-        assert_eq!(challenge_sigma, self.remove_challenge);
-
-        let base_point = pc_gens.B;
-        let z_square = &z * &z;
-        let z_cube = &z_square * &z;
-
-        let check1 = self.res_sk * base_point == self.ann_y + challenge_sigma * pk_sender;
-        let check2 = self.res_r * base_point == self.ann_D + challenge_sigma * enc_amount_sender.1;
-
-        let check3 = self.res_b * base_point == 
-                        z_square * (challenge_sigma * enc_amount_sender.0 - self.res_sk * enc_amount_sender.1) + 
-                        z_cube * (challenge_sigma * enc_balance_after_transfer.0 - self.res_sk * enc_balance_after_transfer.1) + 
-                        self.ann_b; // The paper also has typos in this verification
-        let check4 = self.res_r * (pk_sender - pk_receiver) == self.ann_y_ + challenge_sigma * (enc_amount_sender.0 - enc_amount_receiver.0);
-
-        let c_commit = z_cube * (challenge_sigma * enc_balance_after_transfer.0 - self.res_sk * enc_balance_after_transfer.1) +
-                        z_square * (challenge_sigma * enc_amount_sender.0 - self.res_sk * enc_amount_sender.1);
-
-        let delta_value = delta(n, 2, &y, &z);
-        let t = self.t_x - delta_value;
-        let tau = self.t_x_blinding;
-        let T_1 = self.T_1.decompress().unwrap();
-        let T_2 = self.T_2.decompress().unwrap();
-        let T_12 = x * T_1 + (x * x) * T_2;
-
-        let lhs = self.ann_t + c_commit + challenge_sigma * T_12;
-        let rhs = challenge_sigma * t * pc_gens.B + challenge_sigma * tau * pc_gens.B_blinding;
-
-        let check_zether_statment = lhs == rhs;
-
-        // FINISHING HERE! //
-
         let mega_check = RistrettoPoint::optional_multiscalar_mul(
-            iter::once(Scalar::one())
+            iter::repeat(Scalar::one()).take(6)
+                .chain(iter::once(-self.res_b))
+                .chain(iter::once(-self.res_sk))
+                .chain(iter::once(-self.res_r))
+                .chain(iter::once(-self.res_r))
+                .chain(iter::repeat(zz).take(2))
+                .chain(iter::repeat(zzz).take(2))
+                .chain(iter::repeat(challenge_sigma).take(5))
                 .chain(iter::once(x))
-                //.chain(iter::once(c * x)) // 
-                //.chain(iter::once(c * x * x)) //
                 .chain(x_sq.iter().cloned())
                 .chain(x_inv_sq.iter().cloned())
-                .chain(iter::once(-self.e_blinding))// - c * self.t_x_blinding)) // only t_x_b
-                .chain(iter::once(basepoint_scalar))// Not sure if all
+                .chain(iter::once(-self.e_blinding))
+                .chain(iter::once(basepoint_scalar))
                 .chain(g)
                 .chain(h),
-                //.chain(value_commitment_scalars), //
             iter::once(self.A.decompress())
+                .chain(iter::once(self.ann_y.decompress()))
+                .chain(iter::once(self.ann_y_.decompress()))
+                .chain(iter::once(self.ann_D.decompress()))
+                .chain(iter::once(self.ann_b.decompress()))
+                .chain(iter::once(self.ann_t.decompress()))
+                .chain(iter::repeat(Some(pc_gens.B)).take(3))
+                .chain(iter::once(Some(pk_sender - pk_receiver)))
+                .chain(iter::repeat(Some(challenge_sigma * enc_amount_sender.0 - self.res_sk * enc_amount_sender.1)).take(2))
+                .chain(iter::repeat(Some(challenge_sigma * enc_balance_after_transfer.0 - self.res_sk * enc_balance_after_transfer.1)).take(2))
+                .chain(iter::once(Some(-(self.t_x - delta(n, 2, &y, &z)) * pc_gens.B - self.t_x_blinding * pc_gens.B_blinding)))
+                .chain(iter::once(Some(x * self.T_1.decompress().unwrap() + (x * x) * self.T_2.decompress().unwrap())))
+                .chain(iter::once(Some(enc_amount_sender.0 - enc_amount_receiver.0)))
+                .chain(iter::once(Some(*enc_amount_sender.1)))
+                .chain(iter::once(Some(*pk_sender)))
                 .chain(iter::once(self.S.decompress()))
-                //.chain(iter::once(self.T_1.decompress())) //
-                //.chain(iter::once(self.T_2.decompress())) //
                 .chain(self.ipp_proof.L_vec.iter().map(|L| L.decompress()))
                 .chain(self.ipp_proof.R_vec.iter().map(|R| R.decompress()))
                 .chain(iter::once(Some(pc_gens.B_blinding)))
-                .chain(iter::once(Some(pc_gens.B))) // Not all
+                .chain(iter::once(Some(pc_gens.B)))
                 .chain(bp_gens.G(n, m).map(|&x| Some(x)))
                 .chain(bp_gens.H(n, m).map(|&x| Some(x))),
-                //.chain(value_commitments.iter().map(|V| V.decompress())), // 
         )
         .ok_or_else(|| ProofError::VerificationError)?;
 
-        if mega_check.is_identity() && check_zether_statment {
+        if mega_check.is_identity() {
             Ok((x, y, z))
         } else {
             Err(ProofError::VerificationError)
@@ -840,9 +821,6 @@ mod tests {
     fn singleparty_create_and_verify_helper(n: usize, m: usize) {
         // Split the test into two scopes, so that it's explicit what
         // data is shared between the prover and the verifier.
-
-        // Use bincode for serialization
-        use bincode;
 
         // Both prover and verifier have access to the generators and the proof
         let max_bitsize = 64;
@@ -1044,5 +1022,143 @@ mod tests {
         let maybe_share0 = party0.apply_challenge(&poly_challenge);
 
         assert!(maybe_share0.unwrap_err() == MPCError::MaliciousDealer);
+    }
+
+    use rand::thread_rng;
+
+    #[test]
+    fn create_and_verify_zether_proof() {
+        let b_sent = 1234u64;
+        let b_remaining = 123u64;
+        let b_initial = &b_sent + &b_remaining;
+
+        // Bulletproof part
+        let pc_gens = PedersenGens::default();
+        let bp_gens = BulletproofGens::new(64, 2); 
+
+        let blinding_1 = Scalar::random(&mut thread_rng());
+        let blinding_2 = Scalar::random(&mut thread_rng());
+
+        let mut prover_transcript = Transcript::new(b"doctest example");
+
+        let commitment_1 = pc_gens.commit(Scalar::from(b_sent), blinding_1);
+        let commitment_2 = pc_gens.commit(Scalar::from(b_remaining), blinding_2);
+
+        let sk = Scalar::random(&mut thread_rng());
+        let g = pc_gens.B;
+        
+        let y = &sk * &g; // public key sender
+        let y_ = RistrettoPoint::random(&mut thread_rng()); // public key receiver
+
+        let random_encryption = Scalar::random(&mut thread_rng());
+        let (Cl, Cr) = (&Scalar::from(b_initial) * &g + &random_encryption * &y, &random_encryption * &g);
+
+        let blinding_factor = Scalar::random(&mut thread_rng());
+        let (C, D) = (&Scalar::from(b_sent) * &g + &blinding_factor * &y, &blinding_factor * &g);
+        let (C_, D_) = (&Scalar::from(b_sent) * &g + &blinding_factor * &y_, &blinding_factor * &g);
+
+        let Cln = Cl - C; // encrypted balance after sending
+        let Crn = Cr - D; // "
+
+        let (zether_proof, _committed_value) = ZetherProof::prove_multiple_zether(
+                        &bp_gens, 
+                        &pc_gens, 
+                        &mut prover_transcript, 
+                        &[b_sent, b_remaining],
+                        &[blinding_1, blinding_2],
+                        64, 
+
+                        &y,
+                        &y_,
+                        (&Cln, &Crn), 
+                        (&C, &D), 
+                        &sk, 
+                        &blinding_factor, 
+                    ).expect("A real program could handle errors");
+
+        let mut verifier_transcript = Transcript::new(b"doctest example");
+
+        assert!(zether_proof.verify_multiple_zether(
+            &bp_gens, 
+            &pc_gens, 
+            &mut verifier_transcript, 
+            &[commitment_1.compress(), commitment_2.compress()],
+            64,
+             
+            &y, 
+            &y_, 
+            (&Cln, &Crn), 
+            (&C, &D), 
+            (&C_, &D_), 
+            ).is_ok()
+            );
+    }
+     #[test]
+    fn create_and_verify_invalid_zether_proof() {
+        let b_sent = 1234u64;
+        let b_remaining = 123u64;
+        let b_initial = &b_sent + &b_remaining;
+
+        // Bulletproof part
+        let pc_gens = PedersenGens::default();
+        let bp_gens = BulletproofGens::new(64, 2); 
+
+        let blinding_1 = Scalar::random(&mut thread_rng());
+        let blinding_2 = Scalar::random(&mut thread_rng());
+
+        let mut prover_transcript = Transcript::new(b"doctest example");
+
+        let commitment_1 = pc_gens.commit(Scalar::from(b_sent), blinding_1);
+        // We commit a different value to the one used to generate the proof
+        let commitment_2 = pc_gens.commit(-Scalar::from(b_remaining), blinding_2);
+
+        let sk = Scalar::random(&mut thread_rng());
+        let g = pc_gens.B;
+        
+        let y = &sk * &g; // public key sender
+        let y_ = RistrettoPoint::random(&mut thread_rng()); // public key receiver
+
+        let random_encryption = Scalar::random(&mut thread_rng());
+        let (Cl, Cr) = (&Scalar::from(b_initial) * &g + &random_encryption * &y, &random_encryption * &g);
+
+        let blinding_factor = Scalar::random(&mut thread_rng());
+        let (C, D) = (&Scalar::from(b_sent) * &g + &blinding_factor * &y, &blinding_factor * &g);
+        let (C_, D_) = (&Scalar::from(b_sent) * &g + &blinding_factor * &y_, &blinding_factor * &g);
+
+        let Cln = Cl - C; // encrypted balance after sending
+        let Crn = Cr - D; // "
+
+        let (zether_proof, _committed_value) = ZetherProof::prove_multiple_zether(
+                        &bp_gens, 
+                        &pc_gens, 
+                        &mut prover_transcript, 
+                        &[b_sent, b_remaining],
+                        &[blinding_1, blinding_2],
+                        64, 
+
+                        &y,
+                        &y_,
+                        (&Cln, &Crn), 
+                        (&C, &D), 
+                        &sk, 
+                        &blinding_factor, 
+                    ).expect("A real program could handle errors");
+
+        let mut verifier_transcript = Transcript::new(b"doctest example");
+
+        assert!(zether_proof.verify_multiple_zether(
+            &bp_gens, 
+            &pc_gens, 
+            &mut verifier_transcript, 
+            &[commitment_1.compress(), commitment_2.compress()],
+            64,
+             
+            &y, 
+            &y_, 
+            (&Cln, &Crn), 
+            (&C, &D), 
+            (&C_, &D_), 
+            ).is_err()
+            );
     }
 }
