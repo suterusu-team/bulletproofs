@@ -443,8 +443,7 @@ impl RangeProof {
         ann_D: RistrettoPoint,
         ann_b: RistrettoPoint,
         ann_y_: RistrettoPoint,
-        ann_t: RistrettoPoint,
-        remove_challenge: Scalar,  
+        ann_t: RistrettoPoint, 
         res_sk: Scalar, 
         res_r: Scalar, 
         res_b: Scalar, 
@@ -461,8 +460,7 @@ impl RangeProof {
                     ann_D: ann_D.compress(),
                     ann_b: ann_b.compress(),
                     ann_y_: ann_y_.compress(),
-                    ann_t: ann_t.compress(), 
-                    remove_challenge, 
+                    ann_t: ann_t.compress(),
                     res_sk, 
                     res_r, 
                     res_b}
@@ -536,8 +534,6 @@ pub struct ZetherProof {
     pub ann_y_: CompressedRistretto,
     /// Commitment to the blinding factors
     pub ann_t: CompressedRistretto, 
-    /// Temporaty we store the challenge to verify correctness
-    pub remove_challenge: Scalar, 
     /// Response to the challenge
     pub res_sk: Scalar, 
     /// Response to the challenge
@@ -764,7 +760,137 @@ impl ZetherProof {
         } else {
             Err(ProofError::VerificationError)
         } 
+    }
+
+    /// Serializes the proof into a byte array of \\(2 \lg n + 9\\)
+    /// 32-byte elements, where \\(n\\) is the number of secret bits.
+    ///
+    /// # Layout
+    ///
+    /// The layout of the range proof encoding is:
+    ///
+    /// * 9 compressed Ristretto points \\(A,S,T_1,T_2\\),
+    /// * 6 scalars \\(t_x, \tilde{t}_x, \tilde{e}\\),
+    /// * \\(n\\) pairs of compressed Ristretto points \\(L_0,R_0\dots,L_{n-1},R_{n-1}\\),
+    /// * two scalars \\(a, b\\).
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        // 15 elements: points A, S, T1, T2, ann_y, ann_D, ann_b, ann_y_, ann_t, scalars tx, tx_bl, e_bl, res_sk, res_r, res_b.
+        let mut buf = Vec::with_capacity(15 * 32 + self.ipp_proof.serialized_size());
+        buf.extend_from_slice(self.A.as_bytes());
+        buf.extend_from_slice(self.S.as_bytes());
+        buf.extend_from_slice(self.T_1.as_bytes());
+        buf.extend_from_slice(self.T_2.as_bytes());
+        buf.extend_from_slice(self.t_x.as_bytes());
+        buf.extend_from_slice(self.t_x_blinding.as_bytes());
+        buf.extend_from_slice(self.e_blinding.as_bytes());
+        buf.extend_from_slice(self.ann_y.as_bytes());
+        buf.extend_from_slice(self.ann_D.as_bytes());
+        buf.extend_from_slice(self.ann_b.as_bytes());
+        buf.extend_from_slice(self.ann_y_.as_bytes());
+        buf.extend_from_slice(self.ann_t.as_bytes());
+        buf.extend_from_slice(self.res_sk.as_bytes());
+        buf.extend_from_slice(self.res_r.as_bytes());
+        buf.extend_from_slice(self.res_b.as_bytes());
+        // XXX this costs an extra alloc
+        buf.extend_from_slice(self.ipp_proof.to_bytes().as_slice());
+        buf
+    }
+
+    /// Deserializes the proof from a byte slice.
+    ///
+    /// Returns an error if the byte slice cannot be parsed into a `RangeProof`.
+    pub fn from_bytes(slice: &[u8]) -> Result<ZetherProof, ProofError> {
+        if slice.len() % 32 != 0 {
+            return Err(ProofError::FormatError);
+        }
+        if slice.len() < 15 * 32 {
+            return Err(ProofError::FormatError);
+        }
+
+        use util::read32;
+
+        let A = CompressedRistretto(read32(&slice[0 * 32..]));
+        let S = CompressedRistretto(read32(&slice[1 * 32..]));
+        let T_1 = CompressedRistretto(read32(&slice[2 * 32..]));
+        let T_2 = CompressedRistretto(read32(&slice[3 * 32..]));
+
+        let t_x = Scalar::from_canonical_bytes(read32(&slice[4 * 32..]))
+            .ok_or(ProofError::FormatError)?;
+        let t_x_blinding = Scalar::from_canonical_bytes(read32(&slice[5 * 32..]))
+            .ok_or(ProofError::FormatError)?;
+        let e_blinding = Scalar::from_canonical_bytes(read32(&slice[6 * 32..]))
+            .ok_or(ProofError::FormatError)?;
+
+        let ann_y = CompressedRistretto(read32(&slice[7*32..]));
+        let ann_D = CompressedRistretto(read32(&slice[8*32..]));
+        let ann_b = CompressedRistretto(read32(&slice[9*32..]));
+        let ann_y_ = CompressedRistretto(read32(&slice[10*32..]));
+        let ann_t = CompressedRistretto(read32(&slice[11*32..]));
+
+        let res_sk = Scalar::from_canonical_bytes(read32(&slice[12 * 32..]))
+            .ok_or(ProofError::FormatError)?;
+        let res_r = Scalar::from_canonical_bytes(read32(&slice[13 * 32..]))
+            .ok_or(ProofError::FormatError)?;
+        let res_b = Scalar::from_canonical_bytes(read32(&slice[14 * 32..]))
+            .ok_or(ProofError::FormatError)?;
+
+        let ipp_proof = InnerProductProof::from_bytes(&slice[15 * 32..])?;
+
+        Ok(ZetherProof {
+            A,
+            S,
+            T_1,
+            T_2,
+            t_x,
+            t_x_blinding,
+            e_blinding,
+            ipp_proof,
+            ann_y, 
+            ann_D, 
+            ann_b, 
+            ann_y_, 
+            ann_t, 
+            res_sk, 
+            res_r, 
+            res_b,
+        })
     } 
+}
+
+impl Serialize for ZetherProof {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_bytes(&self.to_bytes()[..])
+    }
+}
+
+impl<'de> Deserialize<'de> for ZetherProof {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ZetherProofVisitor;
+
+        impl<'de> Visitor<'de> for ZetherProofVisitor {
+            type Value = ZetherProof;
+
+            fn expecting(&self, formatter: &mut ::core::fmt::Formatter) -> ::core::fmt::Result {
+                formatter.write_str("a valid ZetherProof")
+            }
+
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<ZetherProof, E>
+            where
+                E: serde::de::Error,
+            {
+                ZetherProof::from_bytes(v).map_err(serde::de::Error::custom)
+            }
+        }
+
+        deserializer.deserialize_bytes(ZetherProofVisitor)
+    }
 }
 
 
@@ -1075,10 +1201,13 @@ mod tests {
                         &sk, 
                         &blinding_factor, 
                     ).expect("A real program could handle errors");
-
+        
+        // Just making sure that the byte conversion works
+        let bytes = zether_proof.to_bytes();
+        let from_bytes = ZetherProof::from_bytes(&bytes).unwrap();
         let mut verifier_transcript = Transcript::new(b"doctest example");
 
-        assert!(zether_proof.verify_multiple_zether(
+        assert!(from_bytes.verify_multiple_zether(
             &bp_gens, 
             &pc_gens, 
             &mut verifier_transcript, 

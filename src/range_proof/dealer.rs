@@ -390,6 +390,6 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
         let res_r = random_hiding + challenge_sigma * comm_rnd;
         let res_b = balance_hiding + challenge_sigma *(sent_balance * (z_square) + remaining_balance * (z_cube));
 
-        Ok(range_proof.to_ZetherProof(ann_y, ann_D, ann_b, ann_y_, ann_t, challenge_sigma, res_sk, res_r, res_b))
+        Ok(range_proof.to_ZetherProof(ann_y, ann_D, ann_b, ann_y_, ann_t, res_sk, res_r, res_b))
     }
 }
