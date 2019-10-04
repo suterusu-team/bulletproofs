@@ -19,6 +19,8 @@ use rand;
 use util;
 
 use super::messages::*;
+use super::batch_proof::BatchZetherProof;
+use errors::ProofError;
 
 /// Used to construct a dealer for the aggregated rangeproof MPC protocol.
 pub struct Dealer {}
@@ -355,8 +357,8 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
         proof_shares: &[ProofShare],
         pk_sender: &RistrettoPoint, 
         pk_receiver: &RistrettoPoint, 
-        enc_balance_after_transfer: (&RistrettoPoint, &RistrettoPoint), 
-        enc_amount_sender: (&RistrettoPoint, &RistrettoPoint),
+        enc_balance_after_transfer: &(RistrettoPoint, RistrettoPoint), 
+        enc_amount_sender: &(RistrettoPoint, RistrettoPoint),
         sk_sender: &Scalar, 
         comm_rnd: &Scalar,
 
@@ -391,5 +393,69 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
         let res_b = balance_hiding + challenge_sigma *(sent_balance * (z_square) + remaining_balance * (z_cube));
 
         Ok(range_proof.to_ZetherProof(ann_y, ann_D, ann_b, ann_y_, ann_t, res_sk, res_r, res_b))
+    }
+
+    /// Receive shares and generate batch proof
+    ///  
+    pub fn receive_shares_and_generate_batch_zether(
+        mut self, 
+        sent_balances: &Vec<Scalar>, 
+        remaining_balance: &Scalar,
+
+        proof_shares: &[ProofShare],
+        pk_sender: &RistrettoPoint, 
+        pks_receivers: &Vec<RistrettoPoint>, 
+        enc_balance_after_transfer: &(RistrettoPoint, RistrettoPoint), 
+        enc_amount_sender: Vec<(RistrettoPoint, RistrettoPoint)>,
+        sk_sender: &Scalar, 
+        comm_rnd: &Scalar,
+
+    ) -> Result<BatchZetherProof, ProofError> {
+        let range_proof = self.assemble_shares(proof_shares)?;
+        let mut rng = rand::thread_rng();
+        let nmbr = pks_receivers.len();
+        if enc_amount_sender.len() != nmbr {
+            return Err(ProofError::WrongNumCiphertextBatchProof);
+        }
+
+        let pc_gens = self.pc_gens;
+        let base_point = pc_gens.B;
+        
+        let z = self.bit_challenge.z;
+        let z_square = z * z;
+        let z_cube = &z_square * z;
+        let mut powers_of_z: Vec<Scalar> = util::exp_iter(z).take(nmbr + 2).collect(); // check. Make sure we remove the powers until zz
+        powers_of_z.remove(0);
+        powers_of_z.remove(0);
+        let last_power_z = powers_of_z.last().unwrap() * z;
+
+        // Blinding factors
+        let sk_hiding = Scalar::random(&mut rng);
+        let random_hiding = Scalar::random(&mut rng);
+        let balance_hiding = Scalar::random(&mut rng);
+
+        // Commitment to blinding factors (or announcements)
+        let ann_y = &sk_hiding * base_point;
+        let ann_D = &random_hiding * base_point; // Different from the original paper, they have a typo. (Their equation does not validate)
+        let mut ann_b = &balance_hiding * base_point;
+        for i in 0..nmbr {
+            ann_b += sk_hiding * z_square * enc_amount_sender[i].1;
+        }
+        ann_b += sk_hiding *  z_cube * enc_balance_after_transfer.1;
+        let ann_y_: Vec<RistrettoPoint> = pks_receivers.into_iter().map(|x| &random_hiding * (pk_sender - x)).collect(); 
+        let ann_t = ann_b - &balance_hiding * base_point;
+
+        let challenge_sigma = self.transcript.challenge_scalar(b"challenge_sigma");
+
+        // Responses of the sigma protocol
+        let res_sk = sk_hiding + challenge_sigma * sk_sender;
+        let res_r = random_hiding + challenge_sigma * comm_rnd;
+        let mut res_b = balance_hiding;
+        for i in 0..nmbr{
+            res_b += challenge_sigma *(sent_balances[i] * powers_of_z[i]);
+        }
+        res_b +=  challenge_sigma *(remaining_balance * (last_power_z));
+
+        Ok(range_proof.to_BatchZetherProof(ann_y, ann_D, ann_b, ann_y_, ann_t, res_sk, res_r, res_b))
     }
 }

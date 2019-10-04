@@ -24,6 +24,9 @@ use serde::{self, Deserialize, Deserializer, Serialize, Serializer};
 pub mod dealer;
 pub mod messages;
 pub mod party;
+pub mod batch_proof;
+
+use self::batch_proof::BatchZetherProof;
 
 /// The `RangeProof` struct represents a proof that one or more values
 /// are in a range.
@@ -465,6 +468,36 @@ impl RangeProof {
                     res_r, 
                     res_b}
     }
+    /// Transform from Rangeproof to zether proof. Temporary method to start cleaning the
+    /// code. 
+    pub fn to_BatchZetherProof(self, 
+        ann_y: RistrettoPoint,
+        ann_D: RistrettoPoint,
+        ann_b: RistrettoPoint,
+        ann_y_: Vec<RistrettoPoint>,
+        ann_t: RistrettoPoint, 
+        res_sk: Scalar, 
+        res_r: Scalar, 
+        res_b: Scalar, 
+    ) -> BatchZetherProof {
+        BatchZetherProof{nmbr: ann_y_.len(),
+                    A: self.A, 
+                    S: self.S, 
+                    T_1: self.T_1, 
+                    T_2: self.T_2, 
+                    t_x: self.t_x, 
+                    t_x_blinding: self.t_x_blinding, 
+                    e_blinding: self.e_blinding, 
+                    ipp_proof: self.ipp_proof,
+                    ann_y: ann_y.compress(),
+                    ann_D: ann_D.compress(),
+                    ann_b: ann_b.compress(),
+                    ann_y_: ann_y_.into_iter().map(|x| x.compress()).collect(),
+                    ann_t: ann_t.compress(),
+                    res_sk, 
+                    res_r, 
+                    res_b}
+    }
 }
 
 impl Serialize for RangeProof {
@@ -551,7 +584,7 @@ impl ZetherProof {
     /// The main difference with the bulletproof, except of the sigma protocol, 
     /// is how we apply the challenge to the committed polynomial.
     /// In this scenario, we omit the first coefficient of the polynomial. 
-    pub fn prove_multiple_zether(
+    pub fn prove_multiple(
         bp_gens: &BulletproofGens,
         pc_gens: &PedersenGens,
         transcript: &mut Transcript,
@@ -561,8 +594,8 @@ impl ZetherProof {
 
         pk_sender: &RistrettoPoint,
         pk_receiver: &RistrettoPoint,
-        enc_balance_after_transfer: (&RistrettoPoint, &RistrettoPoint), 
-        enc_amount_sender: (&RistrettoPoint, &RistrettoPoint), 
+        enc_balance_after_transfer: &(RistrettoPoint, RistrettoPoint), 
+        enc_amount_sender: &(RistrettoPoint, RistrettoPoint), 
         sk_sender: &Scalar, 
         comm_rnd: &Scalar,
     ) -> Result<(ZetherProof, Vec<CompressedRistretto>), ProofError> {
@@ -634,7 +667,7 @@ impl ZetherProof {
     /// to include the ElGamal encryptions instead. A simple translation would 
     /// not suffice, given that ElGamal encryptions cannot be seen as Pedersen 
     /// commitments.
-    pub fn verify_multiple_zether(
+    pub fn verify_multiple(
         &self,
         bp_gens: &BulletproofGens,
         pc_gens: &PedersenGens,
@@ -644,9 +677,9 @@ impl ZetherProof {
 
         pk_sender: &RistrettoPoint, 
         pk_receiver: &RistrettoPoint, 
-        enc_balance_after_transfer: (&RistrettoPoint, &RistrettoPoint), 
-        enc_amount_sender: (&RistrettoPoint, &RistrettoPoint), 
-        enc_amount_receiver: (&RistrettoPoint, &RistrettoPoint),
+        enc_balance_after_transfer: &(RistrettoPoint, RistrettoPoint), 
+        enc_amount_sender: &(RistrettoPoint, RistrettoPoint), 
+        enc_amount_receiver: &(RistrettoPoint, RistrettoPoint),
     ) -> Result<(Scalar, Scalar, Scalar), ProofError> {
         let m = value_commitments.len();
 
@@ -743,7 +776,7 @@ impl ZetherProof {
                 .chain(iter::once(Some(-(self.t_x - delta(n, 2, &y, &z)) * pc_gens.B - self.t_x_blinding * pc_gens.B_blinding)))
                 .chain(iter::once(Some(x * self.T_1.decompress().unwrap() + (x * x) * self.T_2.decompress().unwrap())))
                 .chain(iter::once(Some(enc_amount_sender.0 - enc_amount_receiver.0)))
-                .chain(iter::once(Some(*enc_amount_sender.1)))
+                .chain(iter::once(Some(enc_amount_sender.1)))
                 .chain(iter::once(Some(*pk_sender)))
                 .chain(iter::once(self.S.decompress()))
                 .chain(self.ipp_proof.L_vec.iter().map(|L| L.decompress()))
@@ -1186,7 +1219,7 @@ mod tests {
         let Cln = Cl - C; // encrypted balance after sending
         let Crn = Cr - D; // "
 
-        let (zether_proof, _committed_value) = ZetherProof::prove_multiple_zether(
+        let (zether_proof, _committed_value) = ZetherProof::prove_multiple(
                         &bp_gens, 
                         &pc_gens, 
                         &mut prover_transcript, 
@@ -1196,8 +1229,8 @@ mod tests {
 
                         &y,
                         &y_,
-                        (&Cln, &Crn), 
-                        (&C, &D), 
+                        &(Cln, Crn), 
+                        &(C, D), 
                         &sk, 
                         &blinding_factor, 
                     ).expect("A real program could handle errors");
@@ -1207,7 +1240,7 @@ mod tests {
         let from_bytes = ZetherProof::from_bytes(&bytes).unwrap();
         let mut verifier_transcript = Transcript::new(b"doctest example");
 
-        assert!(from_bytes.verify_multiple_zether(
+        assert!(from_bytes.verify_multiple(
             &bp_gens, 
             &pc_gens, 
             &mut verifier_transcript, 
@@ -1216,9 +1249,9 @@ mod tests {
              
             &y, 
             &y_, 
-            (&Cln, &Crn), 
-            (&C, &D), 
-            (&C_, &D_), 
+            &(Cln, Crn), 
+            &(C, D), 
+            &(C_, D_), 
             ).is_ok()
             );
     }
@@ -1257,7 +1290,7 @@ mod tests {
         let Cln = Cl - C; // encrypted balance after sending
         let Crn = Cr - D; // "
 
-        let (zether_proof, _committed_value) = ZetherProof::prove_multiple_zether(
+        let (zether_proof, _committed_value) = ZetherProof::prove_multiple(
                         &bp_gens, 
                         &pc_gens, 
                         &mut prover_transcript, 
@@ -1267,15 +1300,15 @@ mod tests {
 
                         &y,
                         &y_,
-                        (&Cln, &Crn), 
-                        (&C, &D), 
+                        &(Cln, Crn), 
+                        &(C, D), 
                         &sk, 
                         &blinding_factor, 
                     ).expect("A real program could handle errors");
 
         let mut verifier_transcript = Transcript::new(b"doctest example");
 
-        assert!(zether_proof.verify_multiple_zether(
+        assert!(zether_proof.verify_multiple(
             &bp_gens, 
             &pc_gens, 
             &mut verifier_transcript, 
@@ -1284,9 +1317,9 @@ mod tests {
              
             &y, 
             &y_, 
-            (&Cln, &Crn), 
-            (&C, &D), 
-            (&C_, &D_), 
+            &(Cln, Crn), 
+            &(C, D), 
+            &(C_, D_), 
             ).is_err()
             );
     }
