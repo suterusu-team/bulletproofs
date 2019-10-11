@@ -251,11 +251,13 @@ impl BatchZetherProof {
 
         let basepoint_scalar = w * (self.t_x - a * b);// + c * (delta(n, m, &y, &z) - self.t_x);
 
+
+        // 10-10 Failure. We will remove the last verification, to try and corner the error. 
         let mega_check = RistrettoPoint::optional_multiscalar_mul(
             iter::repeat(Scalar::one()).take(4 + 2 * self.nmbr)
-                .chain(iter::once(-self.res_b))
-                .chain(iter::once(-self.res_sk))
-                .chain(iter::repeat(-self.res_r).take(2 * self.nmbr))
+                .chain(iter::once(-self.res_b)) //doubt
+                .chain(iter::once(-self.res_sk)) // keep
+                .chain(iter::repeat(-self.res_r).take(2 * self.nmbr)) // keep
                 .chain(powers_of_z.clone())
                 .chain(powers_of_z)
                 .chain(iter::repeat(last_power_z).take(2))
@@ -267,29 +269,29 @@ impl BatchZetherProof {
                 .chain(iter::once(basepoint_scalar))
                 .chain(g)
                 .chain(h),
-            iter::once(self.A.decompress())
-                .chain(iter::once(self.ann_y.decompress()))
-                .chain(decompressed_announcements)
-                .chain(iter::repeat(self.ann_D.decompress()).take(self.nmbr))
-                .chain(iter::once(self.ann_b.decompress()))
-                .chain(iter::once(self.ann_t.decompress()))
-                .chain(iter::repeat(Some(pc_gens.B)).take(2 + self.nmbr))
-                .chain(substracted_keys)
-                .chain(hidden_decrypted_ciphertexts.clone())
-                .chain(hidden_decrypted_ciphertexts)
-                .chain(iter::repeat(Some(challenge_sigma * enc_balance_after_transfer.0 - self.res_sk * enc_balance_after_transfer.1)).take(2))
-                .chain(iter::once(Some(-(self.t_x - delta(n, 2, &y, &z)) * pc_gens.B - self.t_x_blinding * pc_gens.B_blinding)))
-                .chain(iter::once(Some(x * self.T_1.decompress().unwrap() + (x * x) * self.T_2.decompress().unwrap())))
-                .chain(substracted_ciphertexts)
-                .chain(enc_amount_senders_1)
-                .chain(iter::once(Some(*pk_sender)))
-                .chain(iter::once(self.S.decompress()))
-                .chain(self.ipp_proof.L_vec.iter().map(|L| L.decompress()))
-                .chain(self.ipp_proof.R_vec.iter().map(|R| R.decompress()))
-                .chain(iter::once(Some(pc_gens.B_blinding)))
-                .chain(iter::once(Some(pc_gens.B)))
-                .chain(bp_gens.G(n, m).map(|&x| Some(x)))
-                .chain(bp_gens.H(n, m).map(|&x| Some(x))),
+            iter::once(self.A.decompress())// remove
+                .chain(iter::once(self.ann_y.decompress())) // keep
+                .chain(decompressed_announcements) //keep (A_y_)
+                .chain(iter::repeat(self.ann_D.decompress()).take(self.nmbr)) // keep
+                .chain(iter::once(self.ann_b.decompress())) //doubt
+                .chain(iter::once(self.ann_t.decompress())) // remove
+                .chain(iter::repeat(Some(pc_gens.B)).take(2 + self.nmbr)) // remove one, keep 1 + self.nmbr
+                .chain(substracted_keys) // keep 
+                .chain(hidden_decrypted_ciphertexts.clone()) //remove
+                .chain(hidden_decrypted_ciphertexts) //remove
+                .chain(iter::repeat(Some(challenge_sigma * enc_balance_after_transfer.0 - self.res_sk * enc_balance_after_transfer.1)).take(2)) //remove
+                .chain(iter::once(Some(-(self.t_x - delta(n, 2, &y, &z)) * pc_gens.B - self.t_x_blinding * pc_gens.B_blinding))) //remove
+                .chain(iter::once(Some(x * self.T_1.decompress().unwrap() + (x * x) * self.T_2.decompress().unwrap()))) //remove
+                .chain(substracted_ciphertexts) // keep (self.nmbr challenge)
+                .chain(enc_amount_senders_1) // keep (self.nmbr challenge)
+                .chain(iter::once(Some(*pk_sender))) // keep 1 challenge
+                .chain(iter::once(self.S.decompress())) // remove 
+                .chain(self.ipp_proof.L_vec.iter().map(|L| L.decompress())) //remove 
+                .chain(self.ipp_proof.R_vec.iter().map(|R| R.decompress())) //remove
+                .chain(iter::once(Some(pc_gens.B_blinding))) // remove 
+                .chain(iter::once(Some(pc_gens.B))) //remove
+                .chain(bp_gens.G(n, m).map(|&x| Some(x))) //remove
+                .chain(bp_gens.H(n, m).map(|&x| Some(x))), //remove
         )
         .ok_or_else(|| ProofError::VerificationError)?;
 
