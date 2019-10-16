@@ -422,8 +422,6 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
         let base_point = pc_gens.B;
         
         let z = self.bit_challenge.z;
-        let z_square = z * z;
-        let z_cube = &z_square * z;
         let mut powers_of_z: Vec<Scalar> = util::exp_iter(z).take(nmbr + 2).collect(); // check. Make sure we remove the powers until zz
         powers_of_z.remove(0);
         powers_of_z.remove(0);
@@ -439,9 +437,9 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
         let ann_D = &random_hiding * base_point; // Different from the original paper, they have a typo. (Their equation does not validate)
         let mut ann_b = &balance_hiding * base_point;
         for i in 0..nmbr {
-            ann_b += sk_hiding * z_square * enc_amount_sender[i].1;
+            ann_b += sk_hiding * powers_of_z[i] * enc_amount_sender[i].1;
         }
-        ann_b += sk_hiding *  z_cube * enc_balance_after_transfer.1;
+        ann_b += sk_hiding *  last_power_z * enc_balance_after_transfer.1;
         let ann_y_: Vec<RistrettoPoint> = pks_receivers.into_iter().map(|x| &random_hiding * (pk_sender - x)).collect(); 
         let ann_t = ann_b - &balance_hiding * base_point;
 

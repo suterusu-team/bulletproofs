@@ -251,17 +251,17 @@ impl BatchZetherProof {
 
         let basepoint_scalar = w * (self.t_x - a * b);// + c * (delta(n, m, &y, &z) - self.t_x);
 
-
         // 10-10 Failure. We will remove the last verification, to try and corner the error. 
+        // 16-10 Normal checks passed. Need to combine proofs with range proofs
         let mega_check = RistrettoPoint::optional_multiscalar_mul(
-            iter::repeat(Scalar::one()).take(4 + 2 * self.nmbr)
-                .chain(iter::once(-self.res_b)) //doubt
+            iter::repeat(Scalar::one()).take(4 + 2 * self.nmbr) // constant should be 4
+                .chain(iter::once(-self.res_b)) // keep
                 .chain(iter::once(-self.res_sk)) // keep
                 .chain(iter::repeat(-self.res_r).take(2 * self.nmbr)) // keep
                 .chain(powers_of_z.clone())
                 .chain(powers_of_z)
-                .chain(iter::repeat(last_power_z).take(2))
-                .chain(iter::repeat(challenge_sigma).take(3 + 2 * self.nmbr))
+                .chain(iter::repeat(last_power_z).take(2)) // should take 2
+                .chain(iter::repeat(challenge_sigma).take(3 + 2 * self.nmbr)) // constant should be 3
                 .chain(iter::once(x))
                 .chain(x_sq.iter().cloned())
                 .chain(x_inv_sq.iter().cloned())
@@ -270,17 +270,18 @@ impl BatchZetherProof {
                 .chain(g)
                 .chain(h),
             iter::once(self.A.decompress())// remove
+            // iter::once(self.ann_y.decompress())    
                 .chain(iter::once(self.ann_y.decompress())) // keep
                 .chain(decompressed_announcements) //keep (A_y_)
                 .chain(iter::repeat(self.ann_D.decompress()).take(self.nmbr)) // keep
-                .chain(iter::once(self.ann_b.decompress())) //doubt
+                .chain(iter::once(self.ann_b.decompress())) // keep
                 .chain(iter::once(self.ann_t.decompress())) // remove
-                .chain(iter::repeat(Some(pc_gens.B)).take(2 + self.nmbr)) // remove one, keep 1 + self.nmbr
+                .chain(iter::repeat(Some(pc_gens.B)).take(2 + self.nmbr)) // keep
                 .chain(substracted_keys) // keep 
                 .chain(hidden_decrypted_ciphertexts.clone()) //remove
-                .chain(hidden_decrypted_ciphertexts) //remove
-                .chain(iter::repeat(Some(challenge_sigma * enc_balance_after_transfer.0 - self.res_sk * enc_balance_after_transfer.1)).take(2)) //remove
-                .chain(iter::once(Some(-(self.t_x - delta(n, 2, &y, &z)) * pc_gens.B - self.t_x_blinding * pc_gens.B_blinding))) //remove
+                .chain(hidden_decrypted_ciphertexts) // keep
+                .chain(iter::repeat(Some(challenge_sigma * enc_balance_after_transfer.0 - self.res_sk * enc_balance_after_transfer.1)).take(2)) // should take 2 
+                .chain(iter::once(Some(-(self.t_x - delta(n, m, &y, &z)) * pc_gens.B - self.t_x_blinding * pc_gens.B_blinding))) //remove
                 .chain(iter::once(Some(x * self.T_1.decompress().unwrap() + (x * x) * self.T_2.decompress().unwrap()))) //remove
                 .chain(substracted_ciphertexts) // keep (self.nmbr challenge)
                 .chain(enc_amount_senders_1) // keep (self.nmbr challenge)
@@ -461,7 +462,6 @@ mod tests {
 
     use generators::PedersenGens;
     use rand::thread_rng;
-    use range_proof::{ZetherProof};
 
     fn add_ciphertext(ctxt_1: &(RistrettoPoint, RistrettoPoint), ctxt_2: &(RistrettoPoint, RistrettoPoint)) -> (RistrettoPoint, RistrettoPoint) {
         (ctxt_1.0 + ctxt_2.0, ctxt_1.1 + ctxt_2.1)
