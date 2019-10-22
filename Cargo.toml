@@ -54,6 +54,10 @@ name = "generators"
 harness = false
 
 [[bench]]
+name = "batch_proofs"
+harness = false
+
+[[bench]]
 name = "r1cs"
 harness = false
 required-features = ["yoloproofs"]
