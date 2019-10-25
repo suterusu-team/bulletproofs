@@ -747,48 +747,63 @@ impl ZetherProof {
 
         let challenge_sigma = transcript.challenge_scalar(b"challenge_sigma");
 
-        let mega_check = RistrettoPoint::optional_multiscalar_mul(
-            iter::repeat(Scalar::one()).take(6)
-                .chain(iter::once(-self.res_b))
+        // We break the mega check in three, otherwise it because too big to compile in --release mode
+
+        let mega_check1 = RistrettoPoint::optional_multiscalar_mul(
+            iter::repeat(Scalar::one()).take(3)
                 .chain(iter::once(-self.res_sk))
                 .chain(iter::once(-self.res_r))
                 .chain(iter::once(-self.res_r))
+                .chain(iter::repeat(challenge_sigma).take(3)),
+            iter::once(self.ann_y.decompress())
+                .chain(iter::once(self.ann_D.decompress()))
+                .chain(iter::once(self.ann_y_.decompress()))
+                .chain(iter::once(Some(pc_gens.B)))
+                .chain(iter::once(Some(pc_gens.B)))
+                .chain(iter::once(Some(pk_sender - pk_receiver)))
+                .chain(iter::once(Some(*pk_sender)))
+                .chain(iter::once(Some(enc_amount_sender.1)))
+                .chain(iter::once(Some(enc_amount_sender.0 - enc_amount_receiver.0))),
+        )
+        .ok_or_else(|| ProofError::VerificationError)?;
+
+        let mega_check2 = RistrettoPoint::optional_multiscalar_mul(
+            iter::repeat(Scalar::one()).take(2)
+                .chain(iter::once(-self.res_b))
                 .chain(iter::repeat(zz).take(2))
                 .chain(iter::repeat(zzz).take(2))
-                .chain(iter::repeat(challenge_sigma).take(5))
+                .chain(iter::repeat(challenge_sigma).take(2)),
+            iter::once(self.ann_b.decompress())
+                .chain(iter::once(self.ann_t.decompress()))
+                .chain(iter::once(Some(pc_gens.B)))
+                .chain(iter::repeat(Some(challenge_sigma * enc_amount_sender.0 - self.res_sk * enc_amount_sender.1)).take(2))
+                .chain(iter::repeat(Some(challenge_sigma * enc_balance_after_transfer.0 - self.res_sk * enc_balance_after_transfer.1)).take(2))
+                .chain(iter::once(Some(-(self.t_x - delta(n, 2, &y, &z)) * pc_gens.B - self.t_x_blinding * pc_gens.B_blinding)))
+                .chain(iter::once(Some(x * self.T_1.decompress().unwrap() + (x * x) * self.T_2.decompress().unwrap()))),
+        )
+        .ok_or_else(|| ProofError::VerificationError)?;
+
+        let mega_check3 = RistrettoPoint::optional_multiscalar_mul(
+            iter::once(Scalar::one())
                 .chain(iter::once(x))
                 .chain(x_sq.iter().cloned())
                 .chain(x_inv_sq.iter().cloned())
                 .chain(iter::once(-self.e_blinding))
                 .chain(iter::once(basepoint_scalar))
                 .chain(g)
-                .chain(h),
+                .chain(h), 
             iter::once(self.A.decompress())
-                .chain(iter::once(self.ann_y.decompress()))
-                .chain(iter::once(self.ann_y_.decompress()))
-                .chain(iter::once(self.ann_D.decompress()))
-                .chain(iter::once(self.ann_b.decompress()))
-                .chain(iter::once(self.ann_t.decompress()))
-                .chain(iter::repeat(Some(pc_gens.B)).take(3))
-                .chain(iter::once(Some(pk_sender - pk_receiver)))
-                .chain(iter::repeat(Some(challenge_sigma * enc_amount_sender.0 - self.res_sk * enc_amount_sender.1)).take(2))
-                .chain(iter::repeat(Some(challenge_sigma * enc_balance_after_transfer.0 - self.res_sk * enc_balance_after_transfer.1)).take(2))
-                .chain(iter::once(Some(-(self.t_x - delta(n, 2, &y, &z)) * pc_gens.B - self.t_x_blinding * pc_gens.B_blinding)))
-                .chain(iter::once(Some(x * self.T_1.decompress().unwrap() + (x * x) * self.T_2.decompress().unwrap())))
-                .chain(iter::once(Some(enc_amount_sender.0 - enc_amount_receiver.0)))
-                .chain(iter::once(Some(enc_amount_sender.1)))
-                .chain(iter::once(Some(*pk_sender)))
                 .chain(iter::once(self.S.decompress()))
                 .chain(self.ipp_proof.L_vec.iter().map(|L| L.decompress()))
                 .chain(self.ipp_proof.R_vec.iter().map(|R| R.decompress()))
                 .chain(iter::once(Some(pc_gens.B_blinding)))
                 .chain(iter::once(Some(pc_gens.B)))
                 .chain(bp_gens.G(n, m).map(|&x| Some(x)))
-                .chain(bp_gens.H(n, m).map(|&x| Some(x))),
+                .chain(bp_gens.H(n, m).map(|&x| Some(x))), 
         )
         .ok_or_else(|| ProofError::VerificationError)?;
 
-        if mega_check.is_identity() {
+        if mega_check1.is_identity() && mega_check2.is_identity() && mega_check3.is_identity() { 
             Ok((x, y, z))
         } else {
             Err(ProofError::VerificationError)

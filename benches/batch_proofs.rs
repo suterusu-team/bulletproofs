@@ -17,7 +17,7 @@ use bulletproofs::{BulletproofGens, PedersenGens, BatchZetherProof};
 use curve25519_dalek::ristretto::{RistrettoPoint};
 
 
-static BATCH_SIZES: [usize; 6] = [1, 2, 4, 8, 16, 32];
+static BATCH_SIZES: [usize; 7] = [3, 7, 15, 31, 63, 127, 255];
 
 fn add_ciphertext(ctxt_1: &(RistrettoPoint, RistrettoPoint), ctxt_2: &(RistrettoPoint, RistrettoPoint)) -> (RistrettoPoint, RistrettoPoint) {
         (ctxt_1.0 + ctxt_2.0, ctxt_1.1 + ctxt_2.1)
@@ -28,23 +28,25 @@ fn create_batched_zether(c: &mut Criterion) {
     c.bench_function_over_inputs(
         &label,
         move |b, &&m| {
-            let mut sent_balance = vec![];
+            let mut balances = vec![]; // consists of sent and remaining balances
             let remaining_balance = 123u64;
             let mut initial_balance = remaining_balance;
             for _ in 0..m {
                 initial_balance += 1111u64;
-                sent_balance.push(1111u64);
+                balances.push(1111u64);
             }
+            balances.push(remaining_balance);
             
             let pc_gens = PedersenGens::default();
-            let bp_gens = BulletproofGens::new(64, m);
+            let bp_gens = BulletproofGens::new(64, m + 1);
 
             let mut blindings = vec![];
             let mut commitments = vec![];
-            for i in 0..m {
+            for i in 0..(m+1) {
                 blindings.push(Scalar::random(&mut thread_rng()));
-                commitments.push(pc_gens.commit(Scalar::from(sent_balance[i]), blindings[i]));
+                commitments.push(pc_gens.commit(Scalar::from(balances[i]), blindings[i]));
             }
+
             let sk = Scalar::random(&mut thread_rng());
             let g = pc_gens.B;
             
@@ -62,8 +64,8 @@ fn create_batched_zether(c: &mut Criterion) {
             let mut enc_amounts_receivers = vec![];
 
             for i in 0..m {
-                enc_amounts_sender.push((&Scalar::from(sent_balance[i]) * &g + &blinding_factor * &y, &blinding_factor * &g));
-                enc_amounts_receivers.push((&Scalar::from(sent_balance[i]) * &g + &blinding_factor *receiver_keys[i], &blinding_factor * &g));
+                enc_amounts_sender.push((&Scalar::from(balances[i]) * &g + &blinding_factor * &y, &blinding_factor * &g));
+                enc_amounts_receivers.push((&Scalar::from(balances[i]) * &g + &blinding_factor *receiver_keys[i], &blinding_factor * &g));
             }
 
             let mut added_encrypted_amount = (Scalar::zero() * g, Scalar::zero() * g);
@@ -82,7 +84,7 @@ fn create_batched_zether(c: &mut Criterion) {
                     &bp_gens, 
                     &pc_gens, 
                     &mut transcript, 
-                    &sent_balance,
+                    &balances,
                     &blindings,
                     64, 
 
@@ -100,27 +102,29 @@ fn create_batched_zether(c: &mut Criterion) {
 }
 
 fn verify_batch_zether(c: &mut Criterion) {
-    let label = format!("Batched zether proof creation");
+    let label = format!("Batched zether proof verification");
     c.bench_function_over_inputs(
         &label,
         move |b, &&m| {
-            let mut sent_balance = vec![];
+            let mut balances = vec![]; // consists of sent and remaining balances
             let remaining_balance = 123u64;
             let mut initial_balance = remaining_balance;
             for _ in 0..m {
                 initial_balance += 1111u64;
-                sent_balance.push(1111u64);
+                balances.push(1111u64);
             }
+            balances.push(remaining_balance);
             
             let pc_gens = PedersenGens::default();
-            let bp_gens = BulletproofGens::new(64, m);
+            let bp_gens = BulletproofGens::new(64, m + 1);
 
             let mut blindings = vec![];
             let mut commitments = vec![];
-            for i in 0..m {
+            for i in 0..(m+1) {
                 blindings.push(Scalar::random(&mut thread_rng()));
-                commitments.push(pc_gens.commit(Scalar::from(sent_balance[i]), blindings[i]).compress());
+                commitments.push((pc_gens.commit(Scalar::from(balances[i]), blindings[i])).compress());
             }
+
             let sk = Scalar::random(&mut thread_rng());
             let g = pc_gens.B;
             
@@ -138,8 +142,8 @@ fn verify_batch_zether(c: &mut Criterion) {
             let mut enc_amounts_receivers = vec![];
 
             for i in 0..m {
-                enc_amounts_sender.push((&Scalar::from(sent_balance[i]) * &g + &blinding_factor * &y, &blinding_factor * &g));
-                enc_amounts_receivers.push((&Scalar::from(sent_balance[i]) * &g + &blinding_factor *receiver_keys[i], &blinding_factor * &g));
+                enc_amounts_sender.push((&Scalar::from(balances[i]) * &g + &blinding_factor * &y, &blinding_factor * &g));
+                enc_amounts_receivers.push((&Scalar::from(balances[i]) * &g + &blinding_factor *receiver_keys[i], &blinding_factor * &g));
             }
 
             let mut added_encrypted_amount = (Scalar::zero() * g, Scalar::zero() * g);
@@ -156,7 +160,7 @@ fn verify_batch_zether(c: &mut Criterion) {
                     &bp_gens, 
                     &pc_gens, 
                     &mut transcript, 
-                    &sent_balance,
+                    &balances,
                     &blindings,
                     64, 
 

@@ -422,7 +422,7 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
         let base_point = pc_gens.B;
         
         let z = self.bit_challenge.z;
-        let mut powers_of_z: Vec<Scalar> = util::exp_iter(z).take(nmbr + 2).collect(); // check. Make sure we remove the powers until zz
+        let mut powers_of_z: Vec<Scalar> = util::exp_iter(z).take(nmbr + 2).collect();
         powers_of_z.remove(0);
         powers_of_z.remove(0);
         let last_power_z = powers_of_z.last().unwrap() * z;
@@ -433,8 +433,9 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
         let balance_hiding = Scalar::random(&mut rng);
 
         // Commitment to blinding factors (or announcements)
+        // ann_b (and all the consecuent messages) can be removed. 
         let ann_y = &sk_hiding * base_point;
-        let ann_D = &random_hiding * base_point; // Different from the original paper, they have a typo. (Their equation does not validate)
+        let ann_D = &random_hiding * base_point; // Different from the original paper, they have a typo.
         let mut ann_b = &balance_hiding * base_point;
         for i in 0..nmbr {
             ann_b += sk_hiding * powers_of_z[i] * enc_amount_sender[i].1;

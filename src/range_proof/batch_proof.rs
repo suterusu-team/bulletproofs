@@ -163,7 +163,7 @@ impl BatchZetherProof {
         bp_gens: &BulletproofGens,
         pc_gens: &PedersenGens,
         transcript: &mut Transcript,
-        value_commitments: &[CompressedRistretto],
+        value_commitments: &Vec<CompressedRistretto>,
         n: usize,
 
         pk_sender: &RistrettoPoint, 
@@ -200,13 +200,11 @@ impl BatchZetherProof {
         let y = transcript.challenge_scalar(b"y");
         let z = transcript.challenge_scalar(b"z");
         let zz = z * z;
-        let zzz = zz * z;
         let mut powers_of_z: Vec<Scalar> = util::exp_iter(z).take(self.nmbr + 2).collect(); // check. Make sure we remove the powers until zz
         powers_of_z.remove(0);
         powers_of_z.remove(0);
         let last_power_z = powers_of_z.last().unwrap() * z;
         assert_eq!(powers_of_z[0], zz);
-        assert_eq!(last_power_z, zzz * zz); // temporary check. Remove when working with multiple recipients
         let minus_z = -z;
 
         transcript.validate_and_append_point(b"T_1", &self.T_1)?;
@@ -251,15 +249,42 @@ impl BatchZetherProof {
 
         let basepoint_scalar = w * (self.t_x - a * b);
 
-        let mega_check = RistrettoPoint::optional_multiscalar_mul(
-            iter::repeat(Scalar::one()).take(4 + 2 * self.nmbr)
-                .chain(iter::once(-self.res_b))
+        let mega_check1 = RistrettoPoint::optional_multiscalar_mul(
+             iter::repeat(Scalar::one()).take(1 + 2 * self.nmbr)
                 .chain(iter::once(-self.res_sk))
                 .chain(iter::repeat(-self.res_r).take(2 * self.nmbr))
+                .chain(iter::repeat(challenge_sigma).take(1 + 2 * self.nmbr)),
+             iter::once(self.ann_y.decompress())
+                .chain(iter::repeat(self.ann_D.decompress()).take(self.nmbr))
+                .chain(decompressed_announcements)
+                .chain(iter::repeat(Some(pc_gens.B)).take(1 + self.nmbr))
+                .chain(substracted_keys)
+                .chain(iter::once(Some(*pk_sender)))
+                .chain(enc_amount_senders_1)
+                .chain(substracted_ciphertexts),
+        )
+        .ok_or_else(|| ProofError::VerificationError)?;
+
+        let mega_check2 = RistrettoPoint::optional_multiscalar_mul(
+            iter::repeat(Scalar::one()).take(2)
+                .chain(iter::once(-self.res_b))
                 .chain(powers_of_z.clone())
                 .chain(powers_of_z)
                 .chain(iter::repeat(last_power_z).take(2))
-                .chain(iter::repeat(challenge_sigma).take(3 + 2 * self.nmbr))
+                .chain(iter::repeat(challenge_sigma).take(2)),
+            iter::once(self.ann_t.decompress())
+                .chain(iter::once(self.ann_b.decompress()))
+                .chain(iter::once(Some(pc_gens.B)))
+                .chain(hidden_decrypted_ciphertexts.clone())
+                .chain(hidden_decrypted_ciphertexts)
+                .chain(iter::repeat(Some(challenge_sigma * enc_balance_after_transfer.0 - self.res_sk * enc_balance_after_transfer.1)).take(2))
+                .chain(iter::once(Some(-(self.t_x - delta(n, m, &y, &z)) * pc_gens.B - self.t_x_blinding * pc_gens.B_blinding)))
+                .chain(iter::once(Some(x * self.T_1.decompress().unwrap() + (x * x) * self.T_2.decompress().unwrap()))) ,
+        )
+        .ok_or_else(|| ProofError::VerificationError)?;
+
+        let mega_check_2 = RistrettoPoint::optional_multiscalar_mul(
+            iter::once(Scalar::one())    
                 .chain(iter::once(x))
                 .chain(x_sq.iter().cloned())
                 .chain(x_inv_sq.iter().cloned())
@@ -268,21 +293,6 @@ impl BatchZetherProof {
                 .chain(g)
                 .chain(h),
             iter::once(self.A.decompress())
-                .chain(iter::once(self.ann_y.decompress()))
-                .chain(decompressed_announcements)
-                .chain(iter::repeat(self.ann_D.decompress()).take(self.nmbr))
-                .chain(iter::once(self.ann_b.decompress()))
-                .chain(iter::once(self.ann_t.decompress()))
-                .chain(iter::repeat(Some(pc_gens.B)).take(2 + self.nmbr))
-                .chain(substracted_keys)
-                .chain(hidden_decrypted_ciphertexts.clone())
-                .chain(hidden_decrypted_ciphertexts)
-                .chain(iter::repeat(Some(challenge_sigma * enc_balance_after_transfer.0 - self.res_sk * enc_balance_after_transfer.1)).take(2)) 
-                .chain(iter::once(Some(-(self.t_x - delta(n, m, &y, &z)) * pc_gens.B - self.t_x_blinding * pc_gens.B_blinding)))
-                .chain(iter::once(Some(x * self.T_1.decompress().unwrap() + (x * x) * self.T_2.decompress().unwrap()))) 
-                .chain(substracted_ciphertexts)
-                .chain(enc_amount_senders_1) 
-                .chain(iter::once(Some(*pk_sender)))
                 .chain(iter::once(self.S.decompress()))
                 .chain(self.ipp_proof.L_vec.iter().map(|L| L.decompress()))
                 .chain(self.ipp_proof.R_vec.iter().map(|R| R.decompress()))
@@ -293,7 +303,7 @@ impl BatchZetherProof {
         )
         .ok_or_else(|| ProofError::VerificationError)?;
 
-        if mega_check.is_identity() {
+        if mega_check_2.is_identity() && mega_check1.is_identity() && mega_check2.is_identity() {
             Ok((x, y, z))
         } else {
             Err(ProofError::VerificationError)
@@ -544,7 +554,7 @@ mod tests {
             &bp_gens, 
             &pc_gens, 
             &mut verifier_transcript, 
-            &[commitment_1.compress(), commitment_2.compress(), commitment_3.compress(), commitment_4.compress()],
+            &vec![commitment_1.compress(), commitment_2.compress(), commitment_3.compress(), commitment_4.compress()],
             64,
              
             &y, 
