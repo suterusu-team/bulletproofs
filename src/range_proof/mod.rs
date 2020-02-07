@@ -1,30 +1,37 @@
 #![allow(non_snake_case)]
 #![doc(include = "../../docs/range-proof-protocol.md")]
 
-use rand;
+extern crate alloc;
+#[cfg(feature = "std")]
+extern crate rand;
 
-use std::iter;
+#[cfg(feature = "std")]
+use self::rand::thread_rng;
+use alloc::vec::Vec;
+
+use core::iter;
 
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::{IsIdentity, VartimeMultiscalarMul};
 use merlin::Transcript;
 
-use errors::ProofError;
-use generators::{BulletproofGens, PedersenGens};
-use inner_product_proof::InnerProductProof;
-use transcript::TranscriptProtocol;
-use util;
+use crate::errors::ProofError;
+use crate::generators::{BulletproofGens, PedersenGens};
+use crate::inner_product_proof::InnerProductProof;
+use crate::transcript::TranscriptProtocol;
+use crate::util;
 
+use rand_core::{CryptoRng, RngCore};
 use serde::de::Visitor;
 use serde::{self, Deserialize, Deserializer, Serialize, Serializer};
 
 // Modules for MPC protocol
 
+pub mod batch_proof;
 pub mod dealer;
 pub mod messages;
 pub mod party;
-pub mod batch_proof;
 
 use self::batch_proof::BatchZetherProof;
 
@@ -128,6 +135,32 @@ impl RangeProof {
     /// );
     /// # }
     /// ```
+    pub fn prove_single_with_rng<T: RngCore + CryptoRng>(
+        bp_gens: &BulletproofGens,
+        pc_gens: &PedersenGens,
+        transcript: &mut Transcript,
+        v: u64,
+        v_blinding: &Scalar,
+        n: usize,
+        rng: &mut T,
+    ) -> Result<(RangeProof, CompressedRistretto), ProofError> {
+        let (p, Vs) = RangeProof::prove_multiple_with_rng(
+            bp_gens,
+            pc_gens,
+            transcript,
+            &[v],
+            &[*v_blinding],
+            n,
+            rng,
+        )?;
+        Ok((p, Vs[0]))
+    }
+
+    /// Create a rangeproof for a given pair of value `v` and
+    /// blinding scalar `v_blinding`.
+    /// This is a convenience wrapper around [`RangeProof::prove_single_with_rng`],
+    /// passing in a threadsafe RNG.
+    #[cfg(feature = "std")]
     pub fn prove_single(
         bp_gens: &BulletproofGens,
         pc_gens: &PedersenGens,
@@ -136,9 +169,15 @@ impl RangeProof {
         v_blinding: &Scalar,
         n: usize,
     ) -> Result<(RangeProof, CompressedRistretto), ProofError> {
-        let (p, Vs) =
-            RangeProof::prove_multiple(bp_gens, pc_gens, transcript, &[v], &[*v_blinding], n)?;
-        Ok((p, Vs[0]))
+        RangeProof::prove_single_with_rng(
+            bp_gens,
+            pc_gens,
+            transcript,
+            v,
+            v_blinding,
+            n,
+            &mut thread_rng(),
+        )
     }
 
     /// Create a rangeproof for a set of values.
@@ -195,13 +234,14 @@ impl RangeProof {
     /// );
     /// # }
     /// ```
-    pub fn prove_multiple(
+    pub fn prove_multiple_with_rng<T: RngCore + CryptoRng>(
         bp_gens: &BulletproofGens,
         pc_gens: &PedersenGens,
         transcript: &mut Transcript,
         values: &[u64],
         blindings: &[Scalar],
         n: usize,
+        rng: &mut T,
     ) -> Result<(RangeProof, Vec<CompressedRistretto>), ProofError> {
         use self::dealer::*;
         use self::party::*;
@@ -223,7 +263,7 @@ impl RangeProof {
             .into_iter()
             .enumerate()
             .map(|(j, p)| {
-                p.assign_position(j)
+                p.assign_position_with_rng(j, rng)
                     .expect("We already checked the parameters, so this should never happen")
             })
             .unzip();
@@ -234,7 +274,7 @@ impl RangeProof {
 
         let (parties, poly_commitments): (Vec<_>, Vec<_>) = parties
             .into_iter()
-            .map(|p| p.apply_challenge(&bit_challenge))
+            .map(|p| p.apply_challenge_with_rng(&bit_challenge, rng))
             .unzip();
 
         let (dealer, poly_challenge) = dealer.receive_poly_commitments(poly_commitments)?;
@@ -250,9 +290,49 @@ impl RangeProof {
         Ok((proof, value_commitments))
     }
 
+    /// Create a rangeproof for a set of values.
+    /// This is a convenience wrapper around [`RangeProof::prove_multiple_with_rng`],
+    /// passing in a threadsafe RNG.
+    #[cfg(feature = "std")]
+    pub fn prove_multiple(
+        bp_gens: &BulletproofGens,
+        pc_gens: &PedersenGens,
+        transcript: &mut Transcript,
+        values: &[u64],
+        blindings: &[Scalar],
+        n: usize,
+    ) -> Result<(RangeProof, Vec<CompressedRistretto>), ProofError> {
+        RangeProof::prove_multiple_with_rng(
+            bp_gens,
+            pc_gens,
+            transcript,
+            values,
+            blindings,
+            n,
+            &mut thread_rng(),
+        )
+    }
+
     /// Verifies a rangeproof for a given value commitment \\(V\\).
     ///
     /// This is a convenience wrapper around `verify_multiple` for the `m=1` case.
+    pub fn verify_single_with_rng<T: RngCore + CryptoRng>(
+        &self,
+        bp_gens: &BulletproofGens,
+        pc_gens: &PedersenGens,
+        transcript: &mut Transcript,
+        V: &CompressedRistretto,
+        n: usize,
+        rng: &mut T,
+    ) -> Result<(), ProofError> {
+        self.verify_multiple_with_rng(bp_gens, pc_gens, transcript, &[*V], n, rng)
+    }
+
+    /// Verifies a rangeproof for a given value commitment \\(V\\).
+    ///
+    /// This is a convenience wrapper around [`RangeProof::verify_single_with_rng`],
+    /// passing in a threadsafe RNG.
+    #[cfg(feature = "std")]
     pub fn verify_single(
         &self,
         bp_gens: &BulletproofGens,
@@ -261,17 +341,18 @@ impl RangeProof {
         V: &CompressedRistretto,
         n: usize,
     ) -> Result<(), ProofError> {
-        self.verify_multiple(bp_gens, pc_gens, transcript, &[*V], n)
+        self.verify_single_with_rng(bp_gens, pc_gens, transcript, V, n, &mut thread_rng())
     }
 
     /// Verifies an aggregated rangeproof for the given value commitments.
-    pub fn verify_multiple(
+    pub fn verify_multiple_with_rng<T: RngCore + CryptoRng>(
         &self,
         bp_gens: &BulletproofGens,
         pc_gens: &PedersenGens,
         transcript: &mut Transcript,
         value_commitments: &[CompressedRistretto],
         n: usize,
+        rng: &mut T,
     ) -> Result<(), ProofError> {
         let m = value_commitments.len();
 
@@ -314,10 +395,8 @@ impl RangeProof {
 
         let w = transcript.challenge_scalar(b"w");
 
-        let mut rng = transcript.build_rng().finalize(&mut rand::thread_rng());
-
         // Challenge value for batching statements to be verified
-        let c = Scalar::random(&mut rng);
+        let c = Scalar::random(rng);
 
         let (x_sq, x_inv_sq, s) = self.ipp_proof.verification_scalars(n * m, transcript)?;
         let s_inv = s.iter().rev();
@@ -372,8 +451,30 @@ impl RangeProof {
             Ok(())
         } else {
             Err(ProofError::VerificationError)
-        } 
-    }   
+        }
+    }
+
+    /// Verifies an aggregated rangeproof for the given value commitments.
+    /// This is a convenience wrapper around [`RangeProof::verify_multiple_with_rng`],
+    /// passing in a threadsafe RNG.
+    #[cfg(feature = "std")]
+    pub fn verify_multiple(
+        &self,
+        bp_gens: &BulletproofGens,
+        pc_gens: &PedersenGens,
+        transcript: &mut Transcript,
+        value_commitments: &[CompressedRistretto],
+        n: usize,
+    ) -> Result<(), ProofError> {
+        self.verify_multiple_with_rng(
+            bp_gens,
+            pc_gens,
+            transcript,
+            value_commitments,
+            n,
+            &mut thread_rng(),
+        )
+    }
 
     /// Serializes the proof into a byte array of \\(2 \lg n + 9\\)
     /// 32-byte elements, where \\(n\\) is the number of secret bits.
@@ -396,8 +497,7 @@ impl RangeProof {
         buf.extend_from_slice(self.t_x.as_bytes());
         buf.extend_from_slice(self.t_x_blinding.as_bytes());
         buf.extend_from_slice(self.e_blinding.as_bytes());
-        // XXX this costs an extra alloc
-        buf.extend_from_slice(self.ipp_proof.to_bytes().as_slice());
+        buf.extend(self.ipp_proof.to_bytes_iter());
         buf
     }
 
@@ -412,7 +512,7 @@ impl RangeProof {
             return Err(ProofError::FormatError);
         }
 
-        use util::read32;
+        use crate::util::read32;
 
         let A = CompressedRistretto(read32(&slice[0 * 32..]));
         let S = CompressedRistretto(read32(&slice[1 * 32..]));
@@ -440,63 +540,69 @@ impl RangeProof {
         })
     }
     /// Transform from Rangeproof to zether proof. Temporary method to start cleaning the
-    /// code. 
-    pub fn to_ZetherProof(self, 
+    /// code.
+    pub fn to_ZetherProof(
+        self,
         ann_y: RistrettoPoint,
         ann_D: RistrettoPoint,
         ann_b: RistrettoPoint,
         ann_y_: RistrettoPoint,
-        ann_t: RistrettoPoint, 
-        res_sk: Scalar, 
-        res_r: Scalar, 
-        res_b: Scalar, 
+        ann_t: RistrettoPoint,
+        res_sk: Scalar,
+        res_r: Scalar,
+        res_b: Scalar,
     ) -> ZetherProof {
-        ZetherProof{A: self.A, 
-                    S: self.S, 
-                    T_1: self.T_1, 
-                    T_2: self.T_2, 
-                    t_x: self.t_x, 
-                    t_x_blinding: self.t_x_blinding, 
-                    e_blinding: self.e_blinding, 
-                    ipp_proof: self.ipp_proof,
-                    ann_y: ann_y.compress(),
-                    ann_D: ann_D.compress(),
-                    ann_b: ann_b.compress(),
-                    ann_y_: ann_y_.compress(),
-                    ann_t: ann_t.compress(),
-                    res_sk, 
-                    res_r, 
-                    res_b}
+        ZetherProof {
+            A: self.A,
+            S: self.S,
+            T_1: self.T_1,
+            T_2: self.T_2,
+            t_x: self.t_x,
+            t_x_blinding: self.t_x_blinding,
+            e_blinding: self.e_blinding,
+            ipp_proof: self.ipp_proof,
+            ann_y: ann_y.compress(),
+            ann_D: ann_D.compress(),
+            ann_b: ann_b.compress(),
+            ann_y_: ann_y_.compress(),
+            ann_t: ann_t.compress(),
+            res_sk,
+            res_r,
+            res_b,
+        }
     }
     /// Transform from Rangeproof to zether proof. Temporary method to start cleaning the
-    /// code. 
-    pub fn to_BatchZetherProof(self, 
+    /// code.
+    pub fn to_BatchZetherProof(
+        self,
         ann_y: RistrettoPoint,
         ann_D: RistrettoPoint,
         ann_b: RistrettoPoint,
         ann_y_: Vec<RistrettoPoint>,
-        ann_t: RistrettoPoint, 
-        res_sk: Scalar, 
-        res_r: Scalar, 
-        res_b: Scalar, 
+        ann_t: RistrettoPoint,
+        res_sk: Scalar,
+        res_r: Scalar,
+        res_b: Scalar,
     ) -> BatchZetherProof {
-        BatchZetherProof{nmbr: ann_y_.len(),
-                    A: self.A, 
-                    S: self.S, 
-                    T_1: self.T_1, 
-                    T_2: self.T_2, 
-                    t_x: self.t_x, 
-                    t_x_blinding: self.t_x_blinding, 
-                    e_blinding: self.e_blinding, 
-                    ipp_proof: self.ipp_proof,
-                    ann_y: ann_y.compress(),
-                    ann_D: ann_D.compress(),
-                    ann_b: ann_b.compress(),
-                    ann_y_: ann_y_.into_iter().map(|x| x.compress()).collect(),
-                    ann_t: ann_t.compress(),
-                    res_sk, 
-                    res_r, 
-                    res_b}
+        BatchZetherProof {
+            nmbr: ann_y_.len(),
+            A: self.A,
+            S: self.S,
+            T_1: self.T_1,
+            T_2: self.T_2,
+            t_x: self.t_x,
+            t_x_blinding: self.t_x_blinding,
+            e_blinding: self.e_blinding,
+            ipp_proof: self.ipp_proof,
+            ann_y: ann_y.compress(),
+            ann_D: ann_D.compress(),
+            ann_b: ann_b.compress(),
+            ann_y_: ann_y_.into_iter().map(|x| x.compress()).collect(),
+            ann_t: ann_t.compress(),
+            res_sk,
+            res_r,
+            res_b,
+        }
     }
 }
 
@@ -519,7 +625,7 @@ impl<'de> Deserialize<'de> for RangeProof {
         impl<'de> Visitor<'de> for RangeProofVisitor {
             type Value = RangeProof;
 
-            fn expecting(&self, formatter: &mut ::core::fmt::Formatter) -> ::core::fmt::Result {
+            fn expecting(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
                 formatter.write_str("a valid RangeProof")
             }
 
@@ -527,14 +633,20 @@ impl<'de> Deserialize<'de> for RangeProof {
             where
                 E: serde::de::Error,
             {
-                RangeProof::from_bytes(v).map_err(serde::de::Error::custom)
+                // Using Error::custom requires T: Display, which our error
+                // type only implements when it implements std::error::Error.
+                #[cfg(feature = "std")]
+                return RangeProof::from_bytes(v).map_err(serde::de::Error::custom);
+                // In no-std contexts, drop the error message.
+                #[cfg(not(feature = "std"))]
+                return RangeProof::from_bytes(v)
+                    .map_err(|_| serde::de::Error::custom("deserialization error"));
             }
         }
 
         deserializer.deserialize_bytes(RangeProofVisitor)
     }
 }
-
 
 #[derive(Clone, Debug)]
 /// The zether proof generates a proof of a correct anonymous transaction making use
@@ -566,24 +678,23 @@ pub struct ZetherProof {
     /// Commitment to the blinding factors
     pub ann_y_: CompressedRistretto,
     /// Commitment to the blinding factors
-    pub ann_t: CompressedRistretto, 
+    pub ann_t: CompressedRistretto,
     /// Response to the challenge
-    pub res_sk: Scalar, 
+    pub res_sk: Scalar,
     /// Response to the challenge
-    pub res_r: Scalar, 
+    pub res_r: Scalar,
     /// Response to the challenge
-    pub res_b: Scalar, 
+    pub res_b: Scalar,
 }
 
 impl ZetherProof {
-
-    /// Generate for multiple in the zether scenario. Because of using ElGamal 
+    /// Generate for multiple in the zether scenario. Because of using ElGamal
     /// encryptions in Zether, we need to twist a bit the proof an verification
-    /// given that the ElGamal bases does not satisfy the requirements of a 
-    /// Pedersen commitment base. 
-    /// The main difference with the bulletproof, except of the sigma protocol, 
+    /// given that the ElGamal bases does not satisfy the requirements of a
+    /// Pedersen commitment base.
+    /// The main difference with the bulletproof, except of the sigma protocol,
     /// is how we apply the challenge to the committed polynomial.
-    /// In this scenario, we omit the first coefficient of the polynomial. 
+    /// In this scenario, we omit the first coefficient of the polynomial.
     pub fn prove_multiple(
         bp_gens: &BulletproofGens,
         pc_gens: &PedersenGens,
@@ -594,9 +705,9 @@ impl ZetherProof {
 
         pk_sender: &RistrettoPoint,
         pk_receiver: &RistrettoPoint,
-        enc_balance_after_transfer: &(RistrettoPoint, RistrettoPoint), 
-        enc_amount_sender: &(RistrettoPoint, RistrettoPoint), 
-        sk_sender: &Scalar, 
+        enc_balance_after_transfer: &(RistrettoPoint, RistrettoPoint),
+        enc_amount_sender: &(RistrettoPoint, RistrettoPoint),
+        sk_sender: &Scalar,
         comm_rnd: &Scalar,
     ) -> Result<(ZetherProof, Vec<CompressedRistretto>), ProofError> {
         use self::dealer::*;
@@ -646,26 +757,25 @@ impl ZetherProof {
             .collect::<Result<Vec<_>, _>>()?;
 
         let proof = dealer.receive_shares_and_generate_zether(
-                &Scalar::from(values[0]), 
-                &Scalar::from(values[1]), 
-                &proof_shares, 
-                pk_sender, 
-                pk_receiver, 
-                enc_balance_after_transfer, 
-                enc_amount_sender,
-                sk_sender, 
-                comm_rnd
-                )?;
-
+            &Scalar::from(values[0]),
+            &Scalar::from(values[1]),
+            &proof_shares,
+            pk_sender,
+            pk_receiver,
+            enc_balance_after_transfer,
+            enc_amount_sender,
+            sk_sender,
+            comm_rnd,
+        )?;
 
         Ok((proof, value_commitments))
     }
 
     /// Verifies an aggregated rangeproof for the given value commitments together
-    /// with the sigma protocol. Note that in the 'mega check' we omit the 
-    /// verification involving the pedersen commitments of the values within a range 
-    /// to include the ElGamal encryptions instead. A simple translation would 
-    /// not suffice, given that ElGamal encryptions cannot be seen as Pedersen 
+    /// with the sigma protocol. Note that in the 'mega check' we omit the
+    /// verification involving the pedersen commitments of the values within a range
+    /// to include the ElGamal encryptions instead. A simple translation would
+    /// not suffice, given that ElGamal encryptions cannot be seen as Pedersen
     /// commitments.
     pub fn verify_multiple(
         &self,
@@ -675,10 +785,10 @@ impl ZetherProof {
         value_commitments: &[CompressedRistretto],
         n: usize,
 
-        pk_sender: &RistrettoPoint, 
-        pk_receiver: &RistrettoPoint, 
-        enc_balance_after_transfer: &(RistrettoPoint, RistrettoPoint), 
-        enc_amount_sender: &(RistrettoPoint, RistrettoPoint), 
+        pk_sender: &RistrettoPoint,
+        pk_receiver: &RistrettoPoint,
+        enc_balance_after_transfer: &(RistrettoPoint, RistrettoPoint),
+        enc_amount_sender: &(RistrettoPoint, RistrettoPoint),
         enc_amount_receiver: &(RistrettoPoint, RistrettoPoint),
     ) -> Result<(Scalar, Scalar, Scalar), ProofError> {
         let m = value_commitments.len();
@@ -743,14 +853,15 @@ impl ZetherProof {
             .zip(concat_z_and_2.iter())
             .map(|((s_i_inv, exp_y_inv), z_and_2)| z + exp_y_inv * (zz * z_and_2 - b * s_i_inv));
 
-        let basepoint_scalar = w * (self.t_x - a * b);// + c * (delta(n, m, &y, &z) - self.t_x);
+        let basepoint_scalar = w * (self.t_x - a * b); // + c * (delta(n, m, &y, &z) - self.t_x);
 
         let challenge_sigma = transcript.challenge_scalar(b"challenge_sigma");
 
         // We break the mega check in three, otherwise it because too big to compile in --release mode
 
         let mega_check1 = RistrettoPoint::optional_multiscalar_mul(
-            iter::repeat(Scalar::one()).take(3)
+            iter::repeat(Scalar::one())
+                .take(3)
                 .chain(iter::once(-self.res_sk))
                 .chain(iter::once(-self.res_r))
                 .chain(iter::once(-self.res_r))
@@ -763,12 +874,15 @@ impl ZetherProof {
                 .chain(iter::once(Some(pk_sender - pk_receiver)))
                 .chain(iter::once(Some(*pk_sender)))
                 .chain(iter::once(Some(enc_amount_sender.1)))
-                .chain(iter::once(Some(enc_amount_sender.0 - enc_amount_receiver.0))),
+                .chain(iter::once(Some(
+                    enc_amount_sender.0 - enc_amount_receiver.0,
+                ))),
         )
         .ok_or_else(|| ProofError::VerificationError)?;
 
         let mega_check2 = RistrettoPoint::optional_multiscalar_mul(
-            iter::repeat(Scalar::one()).take(2)
+            iter::repeat(Scalar::one())
+                .take(2)
                 .chain(iter::once(-self.res_b))
                 .chain(iter::repeat(zz).take(2))
                 .chain(iter::repeat(zzz).take(2))
@@ -776,10 +890,26 @@ impl ZetherProof {
             iter::once(self.ann_b.decompress())
                 .chain(iter::once(self.ann_t.decompress()))
                 .chain(iter::once(Some(pc_gens.B)))
-                .chain(iter::repeat(Some(challenge_sigma * enc_amount_sender.0 - self.res_sk * enc_amount_sender.1)).take(2))
-                .chain(iter::repeat(Some(challenge_sigma * enc_balance_after_transfer.0 - self.res_sk * enc_balance_after_transfer.1)).take(2))
-                .chain(iter::once(Some(-(self.t_x - delta(n, 2, &y, &z)) * pc_gens.B - self.t_x_blinding * pc_gens.B_blinding)))
-                .chain(iter::once(Some(x * self.T_1.decompress().unwrap() + (x * x) * self.T_2.decompress().unwrap()))),
+                .chain(
+                    iter::repeat(Some(
+                        challenge_sigma * enc_amount_sender.0 - self.res_sk * enc_amount_sender.1,
+                    ))
+                    .take(2),
+                )
+                .chain(
+                    iter::repeat(Some(
+                        challenge_sigma * enc_balance_after_transfer.0
+                            - self.res_sk * enc_balance_after_transfer.1,
+                    ))
+                    .take(2),
+                )
+                .chain(iter::once(Some(
+                    -(self.t_x - delta(n, 2, &y, &z)) * pc_gens.B
+                        - self.t_x_blinding * pc_gens.B_blinding,
+                )))
+                .chain(iter::once(Some(
+                    x * self.T_1.decompress().unwrap() + (x * x) * self.T_2.decompress().unwrap(),
+                ))),
         )
         .ok_or_else(|| ProofError::VerificationError)?;
 
@@ -791,7 +921,7 @@ impl ZetherProof {
                 .chain(iter::once(-self.e_blinding))
                 .chain(iter::once(basepoint_scalar))
                 .chain(g)
-                .chain(h), 
+                .chain(h),
             iter::once(self.A.decompress())
                 .chain(iter::once(self.S.decompress()))
                 .chain(self.ipp_proof.L_vec.iter().map(|L| L.decompress()))
@@ -799,15 +929,15 @@ impl ZetherProof {
                 .chain(iter::once(Some(pc_gens.B_blinding)))
                 .chain(iter::once(Some(pc_gens.B)))
                 .chain(bp_gens.G(n, m).map(|&x| Some(x)))
-                .chain(bp_gens.H(n, m).map(|&x| Some(x))), 
+                .chain(bp_gens.H(n, m).map(|&x| Some(x))),
         )
         .ok_or_else(|| ProofError::VerificationError)?;
 
-        if mega_check1.is_identity() && mega_check2.is_identity() && mega_check3.is_identity() { 
+        if mega_check1.is_identity() && mega_check2.is_identity() && mega_check3.is_identity() {
             Ok((x, y, z))
         } else {
             Err(ProofError::VerificationError)
-        } 
+        }
     }
 
     /// Serializes the proof into a byte array of \\(2 \lg n + 9\\)
@@ -870,11 +1000,11 @@ impl ZetherProof {
         let e_blinding = Scalar::from_canonical_bytes(read32(&slice[6 * 32..]))
             .ok_or(ProofError::FormatError)?;
 
-        let ann_y = CompressedRistretto(read32(&slice[7*32..]));
-        let ann_D = CompressedRistretto(read32(&slice[8*32..]));
-        let ann_b = CompressedRistretto(read32(&slice[9*32..]));
-        let ann_y_ = CompressedRistretto(read32(&slice[10*32..]));
-        let ann_t = CompressedRistretto(read32(&slice[11*32..]));
+        let ann_y = CompressedRistretto(read32(&slice[7 * 32..]));
+        let ann_D = CompressedRistretto(read32(&slice[8 * 32..]));
+        let ann_b = CompressedRistretto(read32(&slice[9 * 32..]));
+        let ann_y_ = CompressedRistretto(read32(&slice[10 * 32..]));
+        let ann_t = CompressedRistretto(read32(&slice[11 * 32..]));
 
         let res_sk = Scalar::from_canonical_bytes(read32(&slice[12 * 32..]))
             .ok_or(ProofError::FormatError)?;
@@ -894,16 +1024,16 @@ impl ZetherProof {
             t_x_blinding,
             e_blinding,
             ipp_proof,
-            ann_y, 
-            ann_D, 
-            ann_b, 
-            ann_y_, 
-            ann_t, 
-            res_sk, 
-            res_r, 
+            ann_y,
+            ann_D,
+            ann_b,
+            ann_y_,
+            ann_t,
+            res_sk,
+            res_r,
             res_b,
         })
-    } 
+    }
 }
 
 impl Serialize for ZetherProof {
@@ -941,7 +1071,6 @@ impl<'de> Deserialize<'de> for ZetherProof {
     }
 }
 
-
 /// Compute
 /// \\[
 /// \delta(y,z) = (z - z^{2}) \langle \mathbf{1}, {\mathbf{y}}^{n \cdot m} \rangle - \sum_{j=0}^{m-1} z^{j+3} \cdot \langle \mathbf{1}, {\mathbf{2}}^{n \cdot m} \rangle
@@ -958,7 +1087,7 @@ fn delta(n: usize, m: usize, y: &Scalar, z: &Scalar) -> Scalar {
 mod tests {
     use super::*;
 
-    use generators::PedersenGens;
+    use crate::generators::PedersenGens;
 
     #[test]
     fn test_delta() {
@@ -996,6 +1125,9 @@ mod tests {
         // Split the test into two scopes, so that it's explicit what
         // data is shared between the prover and the verifier.
 
+        // Use bincode for serialization
+        //use bincode; // already present in lib.rs
+
         // Both prover and verifier have access to the generators and the proof
         let max_bitsize = 64;
         let max_parties = 8;
@@ -1004,7 +1136,7 @@ mod tests {
 
         // Prover's scope
         let (proof_bytes, value_commitments) = {
-            use rand::Rng;
+            use self::rand::Rng;
             let mut rng = rand::thread_rng();
 
             // 0. Create witness data
@@ -1087,7 +1219,7 @@ mod tests {
         use self::dealer::*;
         use self::party::*;
 
-        use errors::MPCError;
+        use crate::errors::MPCError;
 
         // Simulate four parties, two of which will be dishonest and use a 64-bit value.
         let m = 4;
@@ -1096,7 +1228,7 @@ mod tests {
         let pc_gens = PedersenGens::default();
         let bp_gens = BulletproofGens::new(n, m);
 
-        use rand::Rng;
+        use self::rand::Rng;
         let mut rng = rand::thread_rng();
         let mut transcript = Transcript::new(b"AggregatedRangeProofTest");
 
@@ -1160,7 +1292,7 @@ mod tests {
     fn detect_dishonest_dealer_during_aggregation() {
         use self::dealer::*;
         use self::party::*;
-        use errors::MPCError;
+        use crate::errors::MPCError;
 
         // Simulate one party
         let m = 1;
@@ -1169,7 +1301,7 @@ mod tests {
         let pc_gens = PedersenGens::default();
         let bp_gens = BulletproofGens::new(n, m);
 
-        use rand::Rng;
+        use self::rand::Rng;
         let mut rng = rand::thread_rng();
         let mut transcript = Transcript::new(b"AggregatedRangeProofTest");
 
@@ -1208,7 +1340,7 @@ mod tests {
 
         // Bulletproof part
         let pc_gens = PedersenGens::default();
-        let bp_gens = BulletproofGens::new(64, 2); 
+        let bp_gens = BulletproofGens::new(64, 2);
 
         let blinding_1 = Scalar::random(&mut thread_rng());
         let blinding_2 = Scalar::random(&mut thread_rng());
@@ -1220,57 +1352,66 @@ mod tests {
 
         let sk = Scalar::random(&mut thread_rng());
         let g = pc_gens.B;
-        
+
         let y = &sk * &g; // public key sender
         let y_ = RistrettoPoint::random(&mut thread_rng()); // public key receiver
 
         let random_encryption = Scalar::random(&mut thread_rng());
-        let (Cl, Cr) = (&Scalar::from(b_initial) * &g + &random_encryption * &y, &random_encryption * &g);
+        let (Cl, Cr) = (
+            &Scalar::from(b_initial) * &g + &random_encryption * &y,
+            &random_encryption * &g,
+        );
 
         let blinding_factor = Scalar::random(&mut thread_rng());
-        let (C, D) = (&Scalar::from(b_sent) * &g + &blinding_factor * &y, &blinding_factor * &g);
-        let (C_, D_) = (&Scalar::from(b_sent) * &g + &blinding_factor * &y_, &blinding_factor * &g);
+        let (C, D) = (
+            &Scalar::from(b_sent) * &g + &blinding_factor * &y,
+            &blinding_factor * &g,
+        );
+        let (C_, D_) = (
+            &Scalar::from(b_sent) * &g + &blinding_factor * &y_,
+            &blinding_factor * &g,
+        );
 
         let Cln = Cl - C; // encrypted balance after sending
         let Crn = Cr - D; // "
 
         let (zether_proof, _committed_value) = ZetherProof::prove_multiple(
-                        &bp_gens, 
-                        &pc_gens, 
-                        &mut prover_transcript, 
-                        &[b_sent, b_remaining],
-                        &[blinding_1, blinding_2],
-                        64, 
+            &bp_gens,
+            &pc_gens,
+            &mut prover_transcript,
+            &[b_sent, b_remaining],
+            &[blinding_1, blinding_2],
+            64,
+            &y,
+            &y_,
+            &(Cln, Crn),
+            &(C, D),
+            &sk,
+            &blinding_factor,
+        )
+        .expect("A real program could handle errors");
 
-                        &y,
-                        &y_,
-                        &(Cln, Crn), 
-                        &(C, D), 
-                        &sk, 
-                        &blinding_factor, 
-                    ).expect("A real program could handle errors");
-        
         // Just making sure that the byte conversion works
         let bytes = zether_proof.to_bytes();
         let from_bytes = ZetherProof::from_bytes(&bytes).unwrap();
         let mut verifier_transcript = Transcript::new(b"doctest example");
 
-        assert!(from_bytes.verify_multiple(
-            &bp_gens, 
-            &pc_gens, 
-            &mut verifier_transcript, 
-            &[commitment_1.compress(), commitment_2.compress()],
-            64,
-             
-            &y, 
-            &y_, 
-            &(Cln, Crn), 
-            &(C, D), 
-            &(C_, D_), 
-            ).is_ok()
-            );
+        assert!(from_bytes
+            .verify_multiple(
+                &bp_gens,
+                &pc_gens,
+                &mut verifier_transcript,
+                &[commitment_1.compress(), commitment_2.compress()],
+                64,
+                &y,
+                &y_,
+                &(Cln, Crn),
+                &(C, D),
+                &(C_, D_),
+            )
+            .is_ok());
     }
-     #[test]
+    #[test]
     fn create_and_verify_invalid_zether_proof() {
         let b_sent = 1234u64;
         let b_remaining = 123u64;
@@ -1278,7 +1419,7 @@ mod tests {
 
         // Bulletproof part
         let pc_gens = PedersenGens::default();
-        let bp_gens = BulletproofGens::new(64, 2); 
+        let bp_gens = BulletproofGens::new(64, 2);
 
         let blinding_1 = Scalar::random(&mut thread_rng());
         let blinding_2 = Scalar::random(&mut thread_rng());
@@ -1291,51 +1432,60 @@ mod tests {
 
         let sk = Scalar::random(&mut thread_rng());
         let g = pc_gens.B;
-        
+
         let y = &sk * &g; // public key sender
         let y_ = RistrettoPoint::random(&mut thread_rng()); // public key receiver
 
         let random_encryption = Scalar::random(&mut thread_rng());
-        let (Cl, Cr) = (&Scalar::from(b_initial) * &g + &random_encryption * &y, &random_encryption * &g);
+        let (Cl, Cr) = (
+            &Scalar::from(b_initial) * &g + &random_encryption * &y,
+            &random_encryption * &g,
+        );
 
         let blinding_factor = Scalar::random(&mut thread_rng());
-        let (C, D) = (&Scalar::from(b_sent) * &g + &blinding_factor * &y, &blinding_factor * &g);
-        let (C_, D_) = (&Scalar::from(b_sent) * &g + &blinding_factor * &y_, &blinding_factor * &g);
+        let (C, D) = (
+            &Scalar::from(b_sent) * &g + &blinding_factor * &y,
+            &blinding_factor * &g,
+        );
+        let (C_, D_) = (
+            &Scalar::from(b_sent) * &g + &blinding_factor * &y_,
+            &blinding_factor * &g,
+        );
 
         let Cln = Cl - C; // encrypted balance after sending
         let Crn = Cr - D; // "
 
         let (zether_proof, _committed_value) = ZetherProof::prove_multiple(
-                        &bp_gens, 
-                        &pc_gens, 
-                        &mut prover_transcript, 
-                        &[b_sent, b_remaining],
-                        &[blinding_1, blinding_2],
-                        64, 
-
-                        &y,
-                        &y_,
-                        &(Cln, Crn), 
-                        &(C, D), 
-                        &sk, 
-                        &blinding_factor, 
-                    ).expect("A real program could handle errors");
+            &bp_gens,
+            &pc_gens,
+            &mut prover_transcript,
+            &[b_sent, b_remaining],
+            &[blinding_1, blinding_2],
+            64,
+            &y,
+            &y_,
+            &(Cln, Crn),
+            &(C, D),
+            &sk,
+            &blinding_factor,
+        )
+        .expect("A real program could handle errors");
 
         let mut verifier_transcript = Transcript::new(b"doctest example");
 
-        assert!(zether_proof.verify_multiple(
-            &bp_gens, 
-            &pc_gens, 
-            &mut verifier_transcript, 
-            &[commitment_1.compress(), commitment_2.compress()],
-            64,
-             
-            &y, 
-            &y_, 
-            &(Cln, Crn), 
-            &(C, D), 
-            &(C_, D_), 
-            ).is_err()
-            );
+        assert!(zether_proof
+            .verify_multiple(
+                &bp_gens,
+                &pc_gens,
+                &mut verifier_transcript,
+                &[commitment_1.compress(), commitment_2.compress()],
+                64,
+                &y,
+                &y_,
+                &(Cln, Crn),
+                &(C, D),
+                &(C_, D_),
+            )
+            .is_err());
     }
 }

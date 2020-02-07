@@ -8,11 +8,11 @@ use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::{IsIdentity, VartimeMultiscalarMul};
 use merlin::Transcript;
 
-use errors::ProofError;
-use generators::{BulletproofGens, PedersenGens};
-use inner_product_proof::InnerProductProof;
-use transcript::TranscriptProtocol;
-use util;
+use crate::errors::ProofError;
+use crate::generators::{BulletproofGens, PedersenGens};
+use crate::inner_product_proof::InnerProductProof;
+use crate::transcript::TranscriptProtocol;
+use crate::util;
 
 use serde::de::Visitor;
 use serde::{self, Deserialize, Deserializer, Serialize, Serializer};
@@ -27,7 +27,7 @@ use super::party::*;
 /// of Bulletproofs.
 pub struct BatchZetherProof {
     /// Number of receipients
-    pub nmbr: usize, 
+    pub nmbr: usize,
     /// Commitment to the bits of the value
     pub A: CompressedRistretto,
     /// Commitment to the blinding factors
@@ -54,25 +54,23 @@ pub struct BatchZetherProof {
     /// Commitment to the blinding factors
     pub ann_y_: Vec<CompressedRistretto>,
     /// Commitment to the blinding factors
-    pub ann_t: CompressedRistretto, 
+    pub ann_t: CompressedRistretto,
     /// Response to the challenge
-    pub res_sk: Scalar, 
+    pub res_sk: Scalar,
     /// Response to the challenge
-    pub res_r: Scalar, 
+    pub res_r: Scalar,
     /// Response to the challenge
-    pub res_b: Scalar, 
+    pub res_b: Scalar,
 }
 
-
 impl BatchZetherProof {
-
-    /// Generate for multiple in the zether scenario. Because of using ElGamal 
+    /// Generate for multiple in the zether scenario. Because of using ElGamal
     /// encryptions in Zether, we need to twist a bit the proof an verification
-    /// given that the ElGamal bases does not satisfy the requirements of a 
-    /// Pedersen commitment base. 
-    /// The main difference with the bulletproof, except of the sigma protocol, 
+    /// given that the ElGamal bases does not satisfy the requirements of a
+    /// Pedersen commitment base.
+    /// The main difference with the bulletproof, except of the sigma protocol,
     /// is how we apply the challenge to the committed polynomial.
-    /// In this scenario, we omit the first coefficient of the polynomial. 
+    /// In this scenario, we omit the first coefficient of the polynomial.
     #[allow(dead_code)]
     pub fn prove_multiple(
         bp_gens: &BulletproofGens,
@@ -84,12 +82,11 @@ impl BatchZetherProof {
 
         pk_sender: &RistrettoPoint,
         pks_receivers: &Vec<RistrettoPoint>,
-        enc_balance_after_transfer: &(RistrettoPoint, RistrettoPoint), 
-        enc_amount_sender: Vec<(RistrettoPoint, RistrettoPoint)>, 
-        sk_sender: &Scalar, 
+        enc_balance_after_transfer: &(RistrettoPoint, RistrettoPoint),
+        enc_amount_sender: Vec<(RistrettoPoint, RistrettoPoint)>,
+        sk_sender: &Scalar,
         comm_rnd: &Scalar,
     ) -> Result<(BatchZetherProof, Vec<CompressedRistretto>), ProofError> {
-
         if values.len() != blindings.len() {
             return Err(ProofError::WrongNumBlindingFactors);
         }
@@ -136,26 +133,25 @@ impl BatchZetherProof {
 
         let scalar_values: Vec<Scalar> = values.into_iter().map(|x| Scalar::from(*x)).collect();
         let proof = dealer.receive_shares_and_generate_batch_zether(
-                &scalar_values[0..scalar_values.len() - 1].to_vec(), 
-                &Scalar::from(*values.last().unwrap()), 
-                &proof_shares, 
-                pk_sender, 
-                pks_receivers, 
-                enc_balance_after_transfer, 
-                enc_amount_sender,
-                sk_sender, 
-                comm_rnd
-                )?;
-
+            &scalar_values[0..scalar_values.len() - 1].to_vec(),
+            &Scalar::from(*values.last().unwrap()),
+            &proof_shares,
+            pk_sender,
+            pks_receivers,
+            enc_balance_after_transfer,
+            enc_amount_sender,
+            sk_sender,
+            comm_rnd,
+        )?;
 
         Ok((proof, value_commitments))
     }
 
     /// Verifies an aggregated rangeproof for the given value commitments together
-    /// with the sigma protocol. Note that in the 'mega check' we omit the 
-    /// verification involving the pedersen commitments of the values within a range 
-    /// to include the ElGamal encryptions instead. A simple translation would 
-    /// not suffice, given that ElGamal encryptions cannot be seen as Pedersen 
+    /// with the sigma protocol. Note that in the 'mega check' we omit the
+    /// verification involving the pedersen commitments of the values within a range
+    /// to include the ElGamal encryptions instead. A simple translation would
+    /// not suffice, given that ElGamal encryptions cannot be seen as Pedersen
     /// commitments.
     #[allow(dead_code)]
     pub fn verify_multiple(
@@ -166,10 +162,10 @@ impl BatchZetherProof {
         value_commitments: &Vec<CompressedRistretto>,
         n: usize,
 
-        pk_sender: &RistrettoPoint, 
-        pk_receiver: &Vec<RistrettoPoint>, 
-        enc_balance_after_transfer: &(RistrettoPoint, RistrettoPoint), 
-        enc_amount_sender: Vec<(RistrettoPoint, RistrettoPoint)>, 
+        pk_sender: &RistrettoPoint,
+        pk_receiver: &Vec<RistrettoPoint>,
+        enc_balance_after_transfer: &(RistrettoPoint, RistrettoPoint),
+        enc_amount_sender: Vec<(RistrettoPoint, RistrettoPoint)>,
         enc_amount_receiver: Vec<(RistrettoPoint, RistrettoPoint)>,
     ) -> Result<(Scalar, Scalar, Scalar), ProofError> {
         let m = value_commitments.len();
@@ -242,19 +238,27 @@ impl BatchZetherProof {
 
         let decompressed_announcements = self.ann_y_.iter().map(|x| x.decompress());
         let substracted_keys = pk_receiver.iter().map(|x| Some(pk_sender - x));
-        let substracted_ciphertexts = enc_amount_receiver.iter().zip(enc_amount_sender.iter()).map(|(x, y)| Some(y.0 - x.0));
-        let hidden_decrypted_ciphertexts = enc_amount_sender.iter().map(|x| Some(challenge_sigma * x.0 - self.res_sk * x.1));
+        let substracted_ciphertexts = enc_amount_receiver
+            .iter()
+            .zip(enc_amount_sender.iter())
+            .map(|(x, y)| Some(y.0 - x.0));
+        let hidden_decrypted_ciphertexts = enc_amount_sender
+            .iter()
+            .map(|x| Some(challenge_sigma * x.0 - self.res_sk * x.1));
         assert_eq!(powers_of_z.len(), hidden_decrypted_ciphertexts.len());
-        let enc_amount_senders_1 = enc_amount_sender.iter().map(|x| Some(x.1 - Scalar::zero() * x.1)); // CLEARLY NOT THE WAY TO DO THIS. Cant deal with the chain error
+        let enc_amount_senders_1 = enc_amount_sender
+            .iter()
+            .map(|x| Some(x.1 - Scalar::zero() * x.1)); // CLEARLY NOT THE WAY TO DO THIS. Cant deal with the chain error
 
         let basepoint_scalar = w * (self.t_x - a * b);
 
         let mega_check1 = RistrettoPoint::optional_multiscalar_mul(
-             iter::repeat(Scalar::one()).take(1 + 2 * self.nmbr)
+            iter::repeat(Scalar::one())
+                .take(1 + 2 * self.nmbr)
                 .chain(iter::once(-self.res_sk))
                 .chain(iter::repeat(-self.res_r).take(2 * self.nmbr))
                 .chain(iter::repeat(challenge_sigma).take(1 + 2 * self.nmbr)),
-             iter::once(self.ann_y.decompress())
+            iter::once(self.ann_y.decompress())
                 .chain(iter::repeat(self.ann_D.decompress()).take(self.nmbr))
                 .chain(decompressed_announcements)
                 .chain(iter::repeat(Some(pc_gens.B)).take(1 + self.nmbr))
@@ -266,7 +270,8 @@ impl BatchZetherProof {
         .ok_or_else(|| ProofError::VerificationError)?;
 
         let mega_check2 = RistrettoPoint::optional_multiscalar_mul(
-            iter::repeat(Scalar::one()).take(2)
+            iter::repeat(Scalar::one())
+                .take(2)
                 .chain(iter::once(-self.res_b))
                 .chain(powers_of_z.clone())
                 .chain(powers_of_z)
@@ -277,14 +282,25 @@ impl BatchZetherProof {
                 .chain(iter::once(Some(pc_gens.B)))
                 .chain(hidden_decrypted_ciphertexts.clone())
                 .chain(hidden_decrypted_ciphertexts)
-                .chain(iter::repeat(Some(challenge_sigma * enc_balance_after_transfer.0 - self.res_sk * enc_balance_after_transfer.1)).take(2))
-                .chain(iter::once(Some(-(self.t_x - delta(n, m, &y, &z)) * pc_gens.B - self.t_x_blinding * pc_gens.B_blinding)))
-                .chain(iter::once(Some(x * self.T_1.decompress().unwrap() + (x * x) * self.T_2.decompress().unwrap()))) ,
+                .chain(
+                    iter::repeat(Some(
+                        challenge_sigma * enc_balance_after_transfer.0
+                            - self.res_sk * enc_balance_after_transfer.1,
+                    ))
+                    .take(2),
+                )
+                .chain(iter::once(Some(
+                    -(self.t_x - delta(n, m, &y, &z)) * pc_gens.B
+                        - self.t_x_blinding * pc_gens.B_blinding,
+                )))
+                .chain(iter::once(Some(
+                    x * self.T_1.decompress().unwrap() + (x * x) * self.T_2.decompress().unwrap(),
+                ))),
         )
         .ok_or_else(|| ProofError::VerificationError)?;
 
         let mega_check_2 = RistrettoPoint::optional_multiscalar_mul(
-            iter::once(Scalar::one())    
+            iter::once(Scalar::one())
                 .chain(iter::once(x))
                 .chain(x_sq.iter().cloned())
                 .chain(x_inv_sq.iter().cloned())
@@ -296,7 +312,7 @@ impl BatchZetherProof {
                 .chain(iter::once(self.S.decompress()))
                 .chain(self.ipp_proof.L_vec.iter().map(|L| L.decompress()))
                 .chain(self.ipp_proof.R_vec.iter().map(|R| R.decompress()))
-                .chain(iter::once(Some(pc_gens.B_blinding))) 
+                .chain(iter::once(Some(pc_gens.B_blinding)))
                 .chain(iter::once(Some(pc_gens.B)))
                 .chain(bp_gens.G(n, m).map(|&x| Some(x)))
                 .chain(bp_gens.H(n, m).map(|&x| Some(x))),
@@ -307,7 +323,7 @@ impl BatchZetherProof {
             Ok((x, y, z))
         } else {
             Err(ProofError::VerificationError)
-        } 
+        }
     }
 
     /// Serializes the proof into a byte array of \\(2 \lg n + 9\\)
@@ -324,7 +340,8 @@ impl BatchZetherProof {
 
     pub fn to_bytes(&self) -> Vec<u8> {
         // 15 elements: points A, S, T1, T2, ann_y, ann_D, ann_b, ann_y_ (multiple), ann_t, scalars tx, tx_bl, e_bl, res_sk, res_r, res_b.
-        let mut buf = Vec::with_capacity((14 + self.nmbr) * 32 + self.ipp_proof.serialized_size() + 8);
+        let mut buf =
+            Vec::with_capacity((14 + self.nmbr) * 32 + self.ipp_proof.serialized_size() + 8);
         buf.extend_from_slice(&self.nmbr.to_ne_bytes());
         buf.extend_from_slice(self.A.as_bytes());
         buf.extend_from_slice(self.S.as_bytes());
@@ -375,23 +392,23 @@ impl BatchZetherProof {
         let e_blinding = Scalar::from_canonical_bytes(read32(&slice[8 + 6 * 32..]))
             .ok_or(ProofError::FormatError)?;
 
-        let ann_y = CompressedRistretto(read32(&slice[8 + 7*32..]));
-        let ann_D = CompressedRistretto(read32(&slice[8 + 8*32..]));
-        let ann_b = CompressedRistretto(read32(&slice[8 + 9*32..]));
+        let ann_y = CompressedRistretto(read32(&slice[8 + 7 * 32..]));
+        let ann_D = CompressedRistretto(read32(&slice[8 + 8 * 32..]));
+        let ann_b = CompressedRistretto(read32(&slice[8 + 9 * 32..]));
         let mut ann_y_: Vec<CompressedRistretto> = vec![];
         for i in 0..nmbr {
-            ann_y_.push(CompressedRistretto(read32(&slice[8 + (10 + i)*32..])));
+            ann_y_.push(CompressedRistretto(read32(&slice[8 + (10 + i) * 32..])));
         }
-        let ann_t = CompressedRistretto(read32(&slice[8 + (11 + nmbr) *32..]));
+        let ann_t = CompressedRistretto(read32(&slice[8 + (11 + nmbr) * 32..]));
 
-        let res_sk = Scalar::from_canonical_bytes(read32(&slice[8 + (12 + nmbr)  * 32..]))
+        let res_sk = Scalar::from_canonical_bytes(read32(&slice[8 + (12 + nmbr) * 32..]))
             .ok_or(ProofError::FormatError)?;
-        let res_r = Scalar::from_canonical_bytes(read32(&slice[8 + (13 + nmbr)  * 32..]))
+        let res_r = Scalar::from_canonical_bytes(read32(&slice[8 + (13 + nmbr) * 32..]))
             .ok_or(ProofError::FormatError)?;
-        let res_b = Scalar::from_canonical_bytes(read32(&slice[8 + (14 + nmbr)  * 32..]))
+        let res_b = Scalar::from_canonical_bytes(read32(&slice[8 + (14 + nmbr) * 32..]))
             .ok_or(ProofError::FormatError)?;
 
-        let ipp_proof = InnerProductProof::from_bytes(&slice[8 + (15 + nmbr)  * 32..])?;
+        let ipp_proof = InnerProductProof::from_bytes(&slice[8 + (15 + nmbr) * 32..])?;
 
         Ok(BatchZetherProof {
             nmbr,
@@ -403,16 +420,16 @@ impl BatchZetherProof {
             t_x_blinding,
             e_blinding,
             ipp_proof,
-            ann_y, 
-            ann_D, 
-            ann_b, 
-            ann_y_, 
-            ann_t, 
-            res_sk, 
-            res_r, 
+            ann_y,
+            ann_D,
+            ann_b,
+            ann_y_,
+            ann_t,
+            res_sk,
+            res_r,
             res_b,
         })
-    } 
+    }
 }
 
 impl Serialize for BatchZetherProof {
@@ -450,7 +467,6 @@ impl<'de> Deserialize<'de> for BatchZetherProof {
     }
 }
 
-
 /// Compute
 /// \\[
 /// \delta(y,z) = (z - z^{2}) \langle \mathbf{1}, {\mathbf{y}}^{n \cdot m} \rangle - \sum_{j=0}^{m-1} z^{j+3} \cdot \langle \mathbf{1}, {\mathbf{2}}^{n \cdot m} \rangle
@@ -467,10 +483,13 @@ fn delta(n: usize, m: usize, y: &Scalar, z: &Scalar) -> Scalar {
 mod tests {
     use super::*;
 
-    use generators::PedersenGens;
+    use crate::generators::PedersenGens;
     use rand::thread_rng;
 
-    fn add_ciphertext(ctxt_1: &(RistrettoPoint, RistrettoPoint), ctxt_2: &(RistrettoPoint, RistrettoPoint)) -> (RistrettoPoint, RistrettoPoint) {
+    fn add_ciphertext(
+        ctxt_1: &(RistrettoPoint, RistrettoPoint),
+        ctxt_2: &(RistrettoPoint, RistrettoPoint),
+    ) -> (RistrettoPoint, RistrettoPoint) {
         (ctxt_1.0 + ctxt_2.0, ctxt_1.1 + ctxt_2.1)
     }
     #[test]
@@ -483,7 +502,7 @@ mod tests {
 
         // Bulletproof part
         let pc_gens = PedersenGens::default();
-        let bp_gens = BulletproofGens::new(64, 4); 
+        let bp_gens = BulletproofGens::new(64, 4);
 
         let blinding_1 = Scalar::random(&mut thread_rng());
         let blinding_2 = Scalar::random(&mut thread_rng());
@@ -499,27 +518,56 @@ mod tests {
 
         let sk = Scalar::random(&mut thread_rng());
         let g = pc_gens.B;
-        
+
         let y = &sk * &g; // public key sender
         let y_1 = RistrettoPoint::random(&mut thread_rng()); // public key receiver 1
         let y_2 = RistrettoPoint::random(&mut thread_rng()); // public key receiver 2
         let y_3 = RistrettoPoint::random(&mut thread_rng()); // public key receiver 3
 
         let random_encryption = Scalar::random(&mut thread_rng());
-        let (Cl, Cr) = (&Scalar::from(b_initial) * &g + &random_encryption * &y, &random_encryption * &g);
+        let (Cl, Cr) = (
+            &Scalar::from(b_initial) * &g + &random_encryption * &y,
+            &random_encryption * &g,
+        );
 
         let blinding_factor = Scalar::random(&mut thread_rng());
-        let enc_amount_sender_1 = (&Scalar::from(b_sent_1) * &g + &blinding_factor * &y, &blinding_factor * &g);
-        let enc_amount_receiver_1 = (&Scalar::from(b_sent_1) * &g + &blinding_factor * &y_1, &blinding_factor * &g);
+        let enc_amount_sender_1 = (
+            &Scalar::from(b_sent_1) * &g + &blinding_factor * &y,
+            &blinding_factor * &g,
+        );
+        let enc_amount_receiver_1 = (
+            &Scalar::from(b_sent_1) * &g + &blinding_factor * &y_1,
+            &blinding_factor * &g,
+        );
 
-        let enc_amount_sender_2 = (&Scalar::from(b_sent_2) * &g + &blinding_factor * &y, &blinding_factor * &g);
-        let enc_amount_receiver_2 = (&Scalar::from(b_sent_2) * &g + &blinding_factor * &y_2, &blinding_factor * &g);
+        let enc_amount_sender_2 = (
+            &Scalar::from(b_sent_2) * &g + &blinding_factor * &y,
+            &blinding_factor * &g,
+        );
+        let enc_amount_receiver_2 = (
+            &Scalar::from(b_sent_2) * &g + &blinding_factor * &y_2,
+            &blinding_factor * &g,
+        );
 
-        let enc_amount_sender_3 = (&Scalar::from(b_sent_3) * &g + &blinding_factor * &y, &blinding_factor * &g);
-        let enc_amount_receiver_3 = (&Scalar::from(b_sent_3) * &g + &blinding_factor * &y_3, &blinding_factor * &g);
+        let enc_amount_sender_3 = (
+            &Scalar::from(b_sent_3) * &g + &blinding_factor * &y,
+            &blinding_factor * &g,
+        );
+        let enc_amount_receiver_3 = (
+            &Scalar::from(b_sent_3) * &g + &blinding_factor * &y_3,
+            &blinding_factor * &g,
+        );
 
-        let enc_amounts_sender = vec![enc_amount_sender_1, enc_amount_sender_2, enc_amount_sender_3];
-        let enc_amounts_receiver = vec![enc_amount_receiver_1, enc_amount_receiver_2, enc_amount_receiver_3];
+        let enc_amounts_sender = vec![
+            enc_amount_sender_1,
+            enc_amount_sender_2,
+            enc_amount_sender_3,
+        ];
+        let enc_amounts_receiver = vec![
+            enc_amount_receiver_1,
+            enc_amount_receiver_2,
+            enc_amount_receiver_3,
+        ];
 
         let mut added_encrypted_amount = (Scalar::zero() * g, Scalar::zero() * g);
         for i in enc_amounts_sender.clone() {
@@ -530,39 +578,44 @@ mod tests {
         let Crn = Cr - added_encrypted_amount.1; // "
 
         let (zether_proof, _committed_value) = BatchZetherProof::prove_multiple(
-                        &bp_gens, 
-                        &pc_gens, 
-                        &mut prover_transcript, 
-                        &[b_sent_1, b_sent_2, b_sent_3, b_remaining],
-                        &[blinding_1, blinding_2, blinding_3, blinding_4],
-                        64, 
+            &bp_gens,
+            &pc_gens,
+            &mut prover_transcript,
+            &[b_sent_1, b_sent_2, b_sent_3, b_remaining],
+            &[blinding_1, blinding_2, blinding_3, blinding_4],
+            64,
+            &y,
+            &vec![y_1, y_2, y_3],
+            &(Cln, Crn),
+            enc_amounts_sender.clone(),
+            &sk,
+            &blinding_factor,
+        )
+        .expect("A real program could handle errors");
 
-                        &y,
-                        &vec![y_1, y_2, y_3],
-                        &(Cln, Crn), 
-                        enc_amounts_sender.clone(), 
-                        &sk, 
-                        &blinding_factor, 
-                    ).expect("A real program could handle errors");
-        
         // Just making sure that the byte conversion works
         // let bytes = zether_proof.to_bytes();
         // let from_bytes = ZetherProof::from_bytes(&bytes).unwrap();
         let mut verifier_transcript = Transcript::new(b"doctest example");
 
-        assert!(zether_proof.verify_multiple(
-            &bp_gens, 
-            &pc_gens, 
-            &mut verifier_transcript, 
-            &vec![commitment_1.compress(), commitment_2.compress(), commitment_3.compress(), commitment_4.compress()],
-            64,
-             
-            &y, 
-            &vec![y_1, y_2, y_3], 
-            &(Cln, Crn), 
-            enc_amounts_sender, 
-            enc_amounts_receiver, 
-            ).is_ok()
-            );
+        assert!(zether_proof
+            .verify_multiple(
+                &bp_gens,
+                &pc_gens,
+                &mut verifier_transcript,
+                &vec![
+                    commitment_1.compress(),
+                    commitment_2.compress(),
+                    commitment_3.compress(),
+                    commitment_4.compress()
+                ],
+                64,
+                &y,
+                &vec![y_1, y_2, y_3],
+                &(Cln, Crn),
+                enc_amounts_sender,
+                enc_amounts_receiver,
+            )
+            .is_ok());
     }
 }

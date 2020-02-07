@@ -5,22 +5,30 @@
 //! [the API for the aggregated multiparty computation protocol](../aggregation/index.html#api-for-the-aggregated-multiparty-computation-protocol).
 
 use core::iter;
+
+extern crate alloc;
+
+use alloc::vec::Vec;
+
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
 use merlin::Transcript;
 
-use errors::MPCError;
-use generators::{BulletproofGens, PedersenGens};
-use inner_product_proof;
-use range_proof::{RangeProof, ZetherProof};
-use transcript::TranscriptProtocol;
+use crate::errors::{MPCError, ProofError};
+use crate::generators::{BulletproofGens, PedersenGens};
+use crate::inner_product_proof;
+use crate::transcript::TranscriptProtocol;
 
-use rand;
-use util;
-
-use super::messages::*;
 use super::batch_proof::BatchZetherProof;
-use errors::ProofError;
+use super::messages::*;
+use super::{RangeProof, ZetherProof};
+
+use rand_core::{CryptoRng, RngCore};
+
+use crate::util;
+
+#[cfg(feature = "std")]
+use rand::thread_rng;
 
 /// Used to construct a dealer for the aggregated rangeproof MPC protocol.
 pub struct Dealer {}
@@ -221,6 +229,20 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
             return Err(MPCError::WrongNumProofShares);
         }
 
+        // Validate lengths for each share
+        let mut bad_shares = Vec::<usize>::new(); // no allocations until we append
+        for (j, share) in proof_shares.iter().enumerate() {
+            share
+                .check_size(self.n, &self.bp_gens, j)
+                .unwrap_or_else(|_| {
+                    bad_shares.push(j);
+                });
+        }
+
+        if bad_shares.len() > 0 {
+            return Err(MPCError::MalformedProofShares { bad_shares });
+        }
+
         let t_x: Scalar = proof_shares.iter().map(|ps| ps.t_x).sum();
         let t_x_blinding: Scalar = proof_shares.iter().map(|ps| ps.t_x_blinding).sum();
         let e_blinding: Scalar = proof_shares.iter().map(|ps| ps.e_blinding).sum();
@@ -275,6 +297,17 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
     /// `proof_shares`, then validate the proof to ensure that all
     /// `ProofShare`s were well-formed.
     ///
+    /// This is a convenience wrapper around receive_shares_with_rng
+    ///
+    #[cfg(feature = "std")]
+    pub fn receive_shares(self, proof_shares: &[ProofShare]) -> Result<RangeProof, MPCError> {
+        self.receive_shares_with_rng(proof_shares, &mut thread_rng())
+    }
+
+    /// Assemble the final aggregated [`RangeProof`] from the given
+    /// `proof_shares`, then validate the proof to ensure that all
+    /// `ProofShare`s were well-formed.
+    ///
     /// If the aggregated proof fails to validate, this function
     /// audits the submitted shares to determine which shares were
     /// invalid.  This information is returned as part of the
@@ -284,7 +317,11 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
     /// performing local aggregation,
     /// [`receive_trusted_shares`](DealerAwaitingProofShares::receive_trusted_shares)
     /// saves time by skipping verification of the aggregated proof.
-    pub fn receive_shares(mut self, proof_shares: &[ProofShare]) -> Result<RangeProof, MPCError> {
+    pub fn receive_shares_with_rng<T: RngCore + CryptoRng>(
+        mut self,
+        proof_shares: &[ProofShare],
+        rng: &mut T,
+    ) -> Result<RangeProof, MPCError> {
         let proof = self.assemble_shares(proof_shares)?;
 
         let Vs: Vec<_> = self.bit_commitments.iter().map(|vc| vc.V_j).collect();
@@ -292,7 +329,7 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
         // See comment in `Dealer::new` for why we use `initial_transcript`
         let transcript = &mut self.initial_transcript;
         if proof
-            .verify_multiple(self.bp_gens, self.pc_gens, transcript, &Vs, self.n)
+            .verify_multiple_with_rng(self.bp_gens, self.pc_gens, transcript, &Vs, self.n, rng)
             .is_ok()
         {
             Ok(proof)
@@ -340,7 +377,7 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
     /// Assemble the final aggregated [`RangeProof`] from the given
     /// `proof_shares`, but skip validation of the proof. Furthermore
     /// it takes the remaining ZetherProof components to generate
-    /// the complete ZetherProof (combining the Bulletproof and the 
+    /// the complete ZetherProof (combining the Bulletproof and the
     /// sigma protocol).
     ///
     /// ## WARNING
@@ -350,25 +387,24 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
     /// known by the dealer to be honest (for instance, when there's
     /// only one party playing all roles).
     pub fn receive_shares_and_generate_zether(
-        mut self, 
-        sent_balance: &Scalar, 
+        mut self,
+        sent_balance: &Scalar,
         remaining_balance: &Scalar,
 
         proof_shares: &[ProofShare],
-        pk_sender: &RistrettoPoint, 
-        pk_receiver: &RistrettoPoint, 
-        enc_balance_after_transfer: &(RistrettoPoint, RistrettoPoint), 
+        pk_sender: &RistrettoPoint,
+        pk_receiver: &RistrettoPoint,
+        enc_balance_after_transfer: &(RistrettoPoint, RistrettoPoint),
         enc_amount_sender: &(RistrettoPoint, RistrettoPoint),
-        sk_sender: &Scalar, 
+        sk_sender: &Scalar,
         comm_rnd: &Scalar,
-
     ) -> Result<ZetherProof, MPCError> {
         let range_proof = self.assemble_shares(proof_shares)?;
         let mut rng = rand::thread_rng();
 
         let pc_gens = self.pc_gens;
         let base_point = pc_gens.B;
-        
+
         let z = self.bit_challenge.z;
         let z_square = z * z;
         let z_cube = &z_square * z;
@@ -381,16 +417,19 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
         // Commitment to blinding factors (or announcements)
         let ann_y = &sk_hiding * base_point;
         let ann_D = &random_hiding * base_point; // Different from the original paper, they have a typo. (Their equation does not validate)
-        let ann_b = &balance_hiding * base_point + sk_hiding * (z_square * enc_amount_sender.1 +  z_cube * enc_balance_after_transfer.1);
+        let ann_b = &balance_hiding * base_point
+            + sk_hiding * (z_square * enc_amount_sender.1 + z_cube * enc_balance_after_transfer.1);
         let ann_y_ = &random_hiding * (pk_sender - pk_receiver); // in high doubt that this is correct
-        let ann_t = sk_hiding * (z_cube * enc_balance_after_transfer.1 + z_square * enc_amount_sender.1);
+        let ann_t =
+            sk_hiding * (z_cube * enc_balance_after_transfer.1 + z_square * enc_amount_sender.1);
 
         let challenge_sigma = self.transcript.challenge_scalar(b"challenge_sigma");
 
         // Responses of the sigma protocol
         let res_sk = sk_hiding + challenge_sigma * sk_sender;
         let res_r = random_hiding + challenge_sigma * comm_rnd;
-        let res_b = balance_hiding + challenge_sigma *(sent_balance * (z_square) + remaining_balance * (z_cube));
+        let res_b = balance_hiding
+            + challenge_sigma * (sent_balance * (z_square) + remaining_balance * (z_cube));
 
         Ok(range_proof.to_ZetherProof(ann_y, ann_D, ann_b, ann_y_, ann_t, res_sk, res_r, res_b))
     }
@@ -398,18 +437,17 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
     /// Receive shares and generate batch proof
     ///  
     pub fn receive_shares_and_generate_batch_zether(
-        mut self, 
-        sent_balances: &Vec<Scalar>, 
+        mut self,
+        sent_balances: &Vec<Scalar>,
         remaining_balance: &Scalar,
 
         proof_shares: &[ProofShare],
-        pk_sender: &RistrettoPoint, 
-        pks_receivers: &Vec<RistrettoPoint>, 
-        enc_balance_after_transfer: &(RistrettoPoint, RistrettoPoint), 
+        pk_sender: &RistrettoPoint,
+        pks_receivers: &Vec<RistrettoPoint>,
+        enc_balance_after_transfer: &(RistrettoPoint, RistrettoPoint),
         enc_amount_sender: Vec<(RistrettoPoint, RistrettoPoint)>,
-        sk_sender: &Scalar, 
+        sk_sender: &Scalar,
         comm_rnd: &Scalar,
-
     ) -> Result<BatchZetherProof, ProofError> {
         let range_proof = self.assemble_shares(proof_shares)?;
         let mut rng = rand::thread_rng();
@@ -420,7 +458,7 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
 
         let pc_gens = self.pc_gens;
         let base_point = pc_gens.B;
-        
+
         let z = self.bit_challenge.z;
         let mut powers_of_z: Vec<Scalar> = util::exp_iter(z).take(nmbr + 2).collect();
         powers_of_z.remove(0);
@@ -433,15 +471,18 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
         let balance_hiding = Scalar::random(&mut rng);
 
         // Commitment to blinding factors (or announcements)
-        // ann_b (and all the consecuent messages) can be removed. 
+        // ann_b (and all the consecuent messages) can be removed.
         let ann_y = &sk_hiding * base_point;
         let ann_D = &random_hiding * base_point; // Different from the original paper, they have a typo.
         let mut ann_b = &balance_hiding * base_point;
         for i in 0..nmbr {
             ann_b += sk_hiding * powers_of_z[i] * enc_amount_sender[i].1;
         }
-        ann_b += sk_hiding *  last_power_z * enc_balance_after_transfer.1;
-        let ann_y_: Vec<RistrettoPoint> = pks_receivers.into_iter().map(|x| &random_hiding * (pk_sender - x)).collect(); 
+        ann_b += sk_hiding * last_power_z * enc_balance_after_transfer.1;
+        let ann_y_: Vec<RistrettoPoint> = pks_receivers
+            .into_iter()
+            .map(|x| &random_hiding * (pk_sender - x))
+            .collect();
         let ann_t = ann_b - &balance_hiding * base_point;
 
         let challenge_sigma = self.transcript.challenge_scalar(b"challenge_sigma");
@@ -450,11 +491,12 @@ impl<'a, 'b> DealerAwaitingProofShares<'a, 'b> {
         let res_sk = sk_hiding + challenge_sigma * sk_sender;
         let res_r = random_hiding + challenge_sigma * comm_rnd;
         let mut res_b = balance_hiding;
-        for i in 0..nmbr{
-            res_b += challenge_sigma *(sent_balances[i] * powers_of_z[i]);
+        for i in 0..nmbr {
+            res_b += challenge_sigma * (sent_balances[i] * powers_of_z[i]);
         }
-        res_b +=  challenge_sigma *(remaining_balance * (last_power_z));
+        res_b += challenge_sigma * (remaining_balance * (last_power_z));
 
-        Ok(range_proof.to_BatchZetherProof(ann_y, ann_D, ann_b, ann_y_, ann_t, res_sk, res_r, res_b))
+        Ok(range_proof
+            .to_BatchZetherProof(ann_y, ann_D, ann_b, ann_y_, ann_t, res_sk, res_r, res_b))
     }
 }
