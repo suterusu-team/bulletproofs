@@ -1375,7 +1375,7 @@ mod tests {
         let Cln = Cl - C; // encrypted balance after sending
         let Crn = Cr - D; // "
 
-        let (zether_proof, _committed_value) = ZetherProof::prove_multiple(
+        let (zether_proof, committed_value) = ZetherProof::prove_multiple(
             &bp_gens,
             &pc_gens,
             &mut prover_transcript,
@@ -1390,6 +1390,27 @@ mod tests {
             &blinding_factor,
         )
         .expect("A real program could handle errors");
+
+        let commitments: Vec<RistrettoPoint> = committed_value
+            .iter()
+            .map(|p| {
+                p.decompress()
+                    .expect("commitments in zether proof should be able to be decompressed")
+            })
+            .collect();
+
+        let original_commitments = vec![commitment_1, commitment_2];
+        assert!(
+            committed_value.len() == 2
+                && commitment_1.compress() == committed_value[0]
+                && commitment_2.compress() == committed_value[1]
+        );
+        println!(
+            "{:?}, {:?}, {:?}",
+            commitment_1.compress(),
+            commitment_2.compress(),
+            committed_value
+        );
 
         // Just making sure that the byte conversion works
         let bytes = zether_proof.to_bytes();

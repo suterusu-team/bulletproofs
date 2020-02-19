@@ -312,11 +312,7 @@ impl PartyAwaitingPolyChallenge {
             return Err(MPCError::MaliciousDealer);
         }
 
-        let t_blinding_poly = util::Poly2(
-            Scalar::zero(),
-            self.t_1_blinding,
-            self.t_2_blinding,
-        );
+        let t_blinding_poly = util::Poly2(Scalar::zero(), self.t_1_blinding, self.t_2_blinding);
 
         let t_x = self.t_poly.eval(pc.x);
         let t_x_blinding = t_blinding_poly.eval(pc.x);
