@@ -24,7 +24,7 @@ pub enum ProofError {
     #[fail(display = "Wrong number of numbers for Zether proof")]
     WrongNumZetherProof,
     /// This error occurs when attempting to create a batch proof
-    /// with different number of receipients public keys and 
+    /// with different number of receipients public keys and
     /// balance ciphertexts
     #[fail(display = "Wrong number of ciphertexts for Batch proof")]
     WrongNumCiphertextBatchProof,
