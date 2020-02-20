@@ -1414,7 +1414,7 @@ mod tests {
         )
         .expect("A real program could handle errors");
 
-        let commitments: Vec<RistrettoPoint> = committed_value
+        let _commitments: Vec<RistrettoPoint> = committed_value
             .iter()
             .map(|p| {
                 p.decompress()
@@ -1422,7 +1422,7 @@ mod tests {
             })
             .collect();
 
-        let original_commitments = vec![commitment_1, commitment_2];
+        let _original_commitments = vec![commitment_1, commitment_2];
         assert!(
             committed_value.len() == 2
                 && commitment_1.compress() == committed_value[0]

@@ -252,49 +252,70 @@ impl BatchZetherProof {
 
         let basepoint_scalar = w * (self.t_x - a * b);
 
-        let mega_check1 = RistrettoPoint::optional_multiscalar_mul(
+        let check_sender_pk = RistrettoPoint::optional_multiscalar_mul(
             iter::once(Scalar::one())
-                .chain(iter::repeat(Scalar::one()).take(self.nmbr))
-                .chain(iter::repeat(Scalar::one()).take(self.nmbr))
-                .chain(iter::once(-self.res_sk))
-                .chain(iter::repeat(-self.res_r).take(self.nmbr))
-                .chain(iter::repeat(-self.res_r).take(self.nmbr))
                 .chain(iter::once(challenge_sigma))
-                .chain(iter::repeat(challenge_sigma).take(self.nmbr))
-                .chain(iter::repeat(challenge_sigma).take(self.nmbr)),
+                .chain(iter::once(-self.res_sk)),
             iter::once(self.ann_y.decompress())
-                .chain(iter::repeat(self.ann_D.decompress()).take(self.nmbr))
-                .chain(decompressed_announcements)
-                .chain(iter::once(Some(pc_gens.B)))
-                .chain(iter::repeat(Some(pc_gens.B)).take(self.nmbr))
-                .chain(substracted_keys)
                 .chain(iter::once(Some(*pk_sender)))
-                .chain(enc_amount_senders_1)
-                .chain(substracted_ciphertexts),
+                .chain(iter::once(Some(pc_gens.B))),
         )
         .ok_or_else(|| ProofError::VerificationError)?;
 
-        let mega_check2 = RistrettoPoint::optional_multiscalar_mul(
+        let check_D = enc_amount_senders_1
+            .map(|enc_amount_sender_1| {
+                RistrettoPoint::optional_multiscalar_mul(
+                    iter::once(Scalar::one())
+                        .chain(iter::once(challenge_sigma))
+                        .chain(iter::once(-self.res_r)),
+                    iter::once(self.ann_D.decompress())
+                        .chain(iter::once(enc_amount_sender_1))
+                        .chain(iter::once(Some(pc_gens.B))),
+                )
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| ProofError::VerificationError)?;
+
+        let check_C_Cbar = decompressed_announcements
+            .zip(substracted_ciphertexts)
+            .zip(substracted_keys)
+            .map(|((ann_y_, substracted_ciphertext), substracted_key)| {
+                RistrettoPoint::optional_multiscalar_mul(
+                    iter::once(Scalar::one())
+                        .chain(iter::once(challenge_sigma))
+                        .chain(iter::once(-self.res_r)),
+                    iter::once(ann_y_)
+                        .chain(iter::once(substracted_ciphertext))
+                        .chain(iter::once(substracted_key)),
+                )
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| ProofError::VerificationError)?;
+
+        let check_balance = RistrettoPoint::optional_multiscalar_mul(
             iter::once(Scalar::one())
-                .chain(iter::once(Scalar::one()))
-                .chain(iter::once(-self.res_b))
                 .chain(powers_of_z.clone())
-                .chain(powers_of_z)
-                .chain(iter::repeat(last_power_z).take(2))
+                .chain(iter::once(last_power_z))
+                .chain(iter::once(-self.res_b)),
+            iter::once(self.ann_b.decompress())
+                .chain(hidden_decrypted_ciphertexts.clone())
+                .chain(iter::once(Some(
+                    challenge_sigma * enc_balance_after_transfer.0
+                        - self.res_sk * enc_balance_after_transfer.1,
+                )))
+                .chain(iter::once(Some(pc_gens.B))),
+        )
+        .ok_or_else(|| ProofError::VerificationError)?;
+
+        let check_t = RistrettoPoint::optional_multiscalar_mul(
+            iter::once(Scalar::one())
+                .chain(iter::once(-Scalar::one()))
+                .chain(iter::once(self.res_b))
                 .chain(iter::once(challenge_sigma))
                 .chain(iter::once(challenge_sigma)),
             iter::once(self.ann_t.decompress())
                 .chain(iter::once(self.ann_b.decompress()))
                 .chain(iter::once(Some(pc_gens.B)))
-                .chain(hidden_decrypted_ciphertexts.clone())
-                .chain(hidden_decrypted_ciphertexts)
-                .chain(
-                    iter::repeat(Some(
-                        challenge_sigma * enc_balance_after_transfer.0
-                            - self.res_sk * enc_balance_after_transfer.1,
-                    ))
-                    .take(2),
-                )
                 .chain(iter::once(Some(
                     -(self.t_x - delta(n, m, &y, &z)) * pc_gens.B
                         - self.t_x_blinding * pc_gens.B_blinding,
@@ -305,7 +326,7 @@ impl BatchZetherProof {
         )
         .ok_or_else(|| ProofError::VerificationError)?;
 
-        let mega_check_2 = RistrettoPoint::optional_multiscalar_mul(
+        let check_ipp = RistrettoPoint::optional_multiscalar_mul(
             iter::once(Scalar::one())
                 .chain(iter::once(x))
                 .chain(x_sq.iter().cloned())
@@ -325,7 +346,13 @@ impl BatchZetherProof {
         )
         .ok_or_else(|| ProofError::VerificationError)?;
 
-        if mega_check_2.is_identity() && mega_check1.is_identity() && mega_check2.is_identity() {
+        if check_sender_pk.is_identity()
+            && check_D.iter().all(|x| x.is_identity())
+            && check_C_Cbar.iter().all(|x| x.is_identity())
+            && check_balance.is_identity()
+            && check_t.is_identity()
+            && check_ipp.is_identity()
+        {
             Ok((x, y, z))
         } else {
             Err(ProofError::VerificationError)
