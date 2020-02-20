@@ -253,15 +253,20 @@ impl BatchZetherProof {
         let basepoint_scalar = w * (self.t_x - a * b);
 
         let mega_check1 = RistrettoPoint::optional_multiscalar_mul(
-            iter::repeat(Scalar::one())
-                .take(1 + 2 * self.nmbr)
+            iter::once(Scalar::one())
+                .chain(iter::repeat(Scalar::one()).take(self.nmbr))
+                .chain(iter::repeat(Scalar::one()).take(self.nmbr))
                 .chain(iter::once(-self.res_sk))
-                .chain(iter::repeat(-self.res_r).take(2 * self.nmbr))
-                .chain(iter::repeat(challenge_sigma).take(1 + 2 * self.nmbr)),
+                .chain(iter::repeat(-self.res_r).take(self.nmbr))
+                .chain(iter::repeat(-self.res_r).take(self.nmbr))
+                .chain(iter::once(challenge_sigma))
+                .chain(iter::repeat(challenge_sigma).take(self.nmbr))
+                .chain(iter::repeat(challenge_sigma).take(self.nmbr)),
             iter::once(self.ann_y.decompress())
                 .chain(iter::repeat(self.ann_D.decompress()).take(self.nmbr))
                 .chain(decompressed_announcements)
-                .chain(iter::repeat(Some(pc_gens.B)).take(1 + self.nmbr))
+                .chain(iter::once(Some(pc_gens.B)))
+                .chain(iter::repeat(Some(pc_gens.B)).take(self.nmbr))
                 .chain(substracted_keys)
                 .chain(iter::once(Some(*pk_sender)))
                 .chain(enc_amount_senders_1)
@@ -270,13 +275,14 @@ impl BatchZetherProof {
         .ok_or_else(|| ProofError::VerificationError)?;
 
         let mega_check2 = RistrettoPoint::optional_multiscalar_mul(
-            iter::repeat(Scalar::one())
-                .take(2)
+            iter::once(Scalar::one())
+                .chain(iter::once(Scalar::one()))
                 .chain(iter::once(-self.res_b))
                 .chain(powers_of_z.clone())
                 .chain(powers_of_z)
                 .chain(iter::repeat(last_power_z).take(2))
-                .chain(iter::repeat(challenge_sigma).take(2)),
+                .chain(iter::once(challenge_sigma))
+                .chain(iter::once(challenge_sigma)),
             iter::once(self.ann_t.decompress())
                 .chain(iter::once(self.ann_b.decompress()))
                 .chain(iter::once(Some(pc_gens.B)))

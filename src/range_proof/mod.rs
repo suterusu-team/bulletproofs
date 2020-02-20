@@ -860,12 +860,15 @@ impl ZetherProof {
         // We break the mega check in three, otherwise it because too big to compile in --release mode
 
         let mega_check1 = RistrettoPoint::optional_multiscalar_mul(
-            iter::repeat(Scalar::one())
-                .take(3)
+            iter::once(Scalar::one())
+                .chain(iter::once(Scalar::one()))
+                .chain(iter::once(Scalar::one()))
                 .chain(iter::once(-self.res_sk))
                 .chain(iter::once(-self.res_r))
                 .chain(iter::once(-self.res_r))
-                .chain(iter::repeat(challenge_sigma).take(3)),
+                .chain(iter::once(challenge_sigma))
+                .chain(iter::once(challenge_sigma))
+                .chain(iter::once(challenge_sigma)),
             iter::once(self.ann_y.decompress())
                 .chain(iter::once(self.ann_D.decompress()))
                 .chain(iter::once(self.ann_y_.decompress()))
@@ -881,12 +884,13 @@ impl ZetherProof {
         .ok_or_else(|| ProofError::VerificationError)?;
 
         let mega_check2 = RistrettoPoint::optional_multiscalar_mul(
-            iter::repeat(Scalar::one())
-                .take(2)
+            iter::once(Scalar::one())
+                .chain(iter::once(Scalar::one()))
                 .chain(iter::once(-self.res_b))
                 .chain(iter::repeat(zz).take(2))
                 .chain(iter::repeat(zzz).take(2))
-                .chain(iter::repeat(challenge_sigma).take(2)),
+                .chain(iter::once(challenge_sigma))
+                .chain(iter::once(challenge_sigma)),
             iter::once(self.ann_b.decompress())
                 .chain(iter::once(self.ann_t.decompress()))
                 .chain(iter::once(Some(pc_gens.B)))
