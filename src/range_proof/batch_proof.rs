@@ -432,16 +432,16 @@ impl BatchZetherProof {
         for i in 0..nmbr {
             ann_y_.push(CompressedRistretto(read32(&slice[8 + (10 + i) * 32..])));
         }
-        let ann_t = CompressedRistretto(read32(&slice[8 + (11 + nmbr) * 32..]));
+        let ann_t = CompressedRistretto(read32(&slice[8 + (10 + nmbr) * 32..]));
 
-        let res_sk = Scalar::from_canonical_bytes(read32(&slice[8 + (12 + nmbr) * 32..]))
+        let res_sk = Scalar::from_canonical_bytes(read32(&slice[8 + (11 + nmbr) * 32..]))
             .ok_or(ProofError::FormatError)?;
-        let res_r = Scalar::from_canonical_bytes(read32(&slice[8 + (13 + nmbr) * 32..]))
+        let res_r = Scalar::from_canonical_bytes(read32(&slice[8 + (12 + nmbr) * 32..]))
             .ok_or(ProofError::FormatError)?;
-        let res_b = Scalar::from_canonical_bytes(read32(&slice[8 + (14 + nmbr) * 32..]))
+        let res_b = Scalar::from_canonical_bytes(read32(&slice[8 + (13 + nmbr) * 32..]))
             .ok_or(ProofError::FormatError)?;
 
-        let ipp_proof = InnerProductProof::from_bytes(&slice[8 + (15 + nmbr) * 32..])?;
+        let ipp_proof = InnerProductProof::from_bytes(&slice[8 + (14 + nmbr) * 32..])?;
 
         Ok(BatchZetherProof {
             nmbr,
@@ -525,6 +525,92 @@ mod tests {
     ) -> (RistrettoPoint, RistrettoPoint) {
         (ctxt_1.0 + ctxt_2.0, ctxt_1.1 + ctxt_2.1)
     }
+
+    #[test]
+    fn serialize_and_deserialize_batch_zether_proof() {
+        let b_sent_1 = 1234u64;
+        let b_sent_2 = 1222u64;
+        let b_sent_3 = 111u64;
+        let b_remaining = 123u64;
+        let b_initial = &b_sent_1 + &b_sent_2 + &b_sent_3 + &b_remaining;
+
+        // Bulletproof part
+        let pc_gens = PedersenGens::default();
+        let bp_gens = BulletproofGens::new(64, 4);
+
+        let blinding_1 = Scalar::random(&mut thread_rng());
+        let blinding_2 = Scalar::random(&mut thread_rng());
+        let blinding_3 = Scalar::random(&mut thread_rng());
+        let blinding_4 = Scalar::random(&mut thread_rng());
+
+        let mut prover_transcript = Transcript::new(b"doctest example");
+
+        let sk = Scalar::random(&mut thread_rng());
+        let g = pc_gens.B;
+
+        let y = &sk * &g; // public key sender
+        let y_1 = RistrettoPoint::random(&mut thread_rng()); // public key receiver 1
+        let y_2 = RistrettoPoint::random(&mut thread_rng()); // public key receiver 2
+        let y_3 = RistrettoPoint::random(&mut thread_rng()); // public key receiver 3
+
+        let random_encryption = Scalar::random(&mut thread_rng());
+        let (Cl, Cr) = (
+            &Scalar::from(b_initial) * &g + &random_encryption * &y,
+            &random_encryption * &g,
+        );
+
+        let blinding_factor = Scalar::random(&mut thread_rng());
+        let enc_amount_sender_1 = (
+            &Scalar::from(b_sent_1) * &g + &blinding_factor * &y,
+            &blinding_factor * &g,
+        );
+
+        let enc_amount_sender_2 = (
+            &Scalar::from(b_sent_2) * &g + &blinding_factor * &y,
+            &blinding_factor * &g,
+        );
+
+        let enc_amount_sender_3 = (
+            &Scalar::from(b_sent_3) * &g + &blinding_factor * &y,
+            &blinding_factor * &g,
+        );
+
+        let enc_amounts_sender = vec![
+            enc_amount_sender_1,
+            enc_amount_sender_2,
+            enc_amount_sender_3,
+        ];
+
+        let mut added_encrypted_amount = (Scalar::zero() * g, Scalar::zero() * g);
+        for i in enc_amounts_sender.clone() {
+            added_encrypted_amount = add_ciphertext(&added_encrypted_amount, &i);
+        }
+
+        let Cln = Cl - added_encrypted_amount.0; // encrypted balance after sending
+        let Crn = Cr - added_encrypted_amount.1; // "
+
+        let (zether_proof, _committed_value) = BatchZetherProof::prove_multiple(
+            &bp_gens,
+            &pc_gens,
+            &mut prover_transcript,
+            &[b_sent_1, b_sent_2, b_sent_3, b_remaining],
+            &[blinding_1, blinding_2, blinding_3, blinding_4],
+            64,
+            &y,
+            &vec![y_1, y_2, y_3],
+            &(Cln, Crn),
+            enc_amounts_sender.clone(),
+            &sk,
+            &blinding_factor,
+        )
+        .expect("A real program could handle errors");
+
+        // Just making sure that the byte conversion works
+        let bytes = zether_proof.to_bytes();
+        let from_bytes = BatchZetherProof::from_bytes(&bytes).unwrap();
+        assert_eq!(bytes, from_bytes.to_bytes());
+    }
+
     #[test]
     fn create_and_verify_batch_zether_proof() {
         let b_sent_1 = 1234u64;
@@ -626,9 +712,6 @@ mod tests {
         )
         .expect("A real program could handle errors");
 
-        // Just making sure that the byte conversion works
-        // let bytes = zether_proof.to_bytes();
-        // let from_bytes = ZetherProof::from_bytes(&bytes).unwrap();
         let mut verifier_transcript = Transcript::new(b"doctest example");
 
         assert!(zether_proof
